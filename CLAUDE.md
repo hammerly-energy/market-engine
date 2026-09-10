@@ -95,6 +95,39 @@ market-engine/
 - **Test files are named `test_<milestone>_<context>.py`** — e.g. `test_m0_single_bus.py`, `test_m2_network.py`. The milestone says *when* a test was written and ties it to the table below; the context says *what physical setup it covers*, which is what still means something at M5. A milestone alone (`test_m0.py`) ages into a date stamp. A context alone loses the spine of the repo.
   Inside the file, group tests by lifespan, not by milestone: invariants that hold forever (energy balance, capacity bounds, cost consistency) belong in their own class, separate from the special cases a later milestone supersedes. The settlement identity at M0 is the example — it holds with congestion pinned at zero, and M2 replaces that zero with a real congestion term rather than deleting the test.
 
+## Visualization
+
+**Every plot is a publication figure.** Assume it will be printed in a journal
+article, at column width, in grayscale, next to a caption. Nothing in this repo
+gets a default-styled throwaway chart.
+
+Non-negotiable:
+
+- **The title states the finding, not the variables.** "Price is a staircase;
+  the risers are where the dual breaks down" — not "lambda vs demand."
+- **Axes are labeled with units.** `$/MWh`, `MW`, `MWh`, UTC timestamps. Always.
+- **Colorblind-safe palette, validated, not eyeballed.** Assign hues by identity
+  in a fixed order; never cycle. Sequential data gets one hue light-to-dark;
+  diverging data gets two hues with a neutral midpoint. Never a rainbow.
+- **Direct-label series** wherever they can be placed without collision. A legend
+  is present for two or more series; direct labels supplement it, not replace it.
+- **One y-axis.** Never a dual-axis chart. Two measures of different scale get
+  two panels or an indexed common base.
+- **Recessive grid and axes.** No top or right spine, no heavy gridlines, no
+  chartjunk, no 3-D, no drop shadows.
+- **300 dpi raster plus a vector copy** (PDF or SVG). Raster alone is not
+  publishable.
+- **Render it and look at it before accepting it.** Silent failures are the norm
+  in matplotlib: unescaped `$` becomes mathtext, labels collide, text overflows
+  the axes. None of these raise. Open the file and inspect it every time.
+
+Figures are written into `runs/<timestamp>/` alongside the config snapshot that
+produced them, so any figure can be traced back to the exact solve behind it.
+
+Plotting code lives in `src/viz/` and is importable: a function returns a
+`Figure`, and only `__main__` writes files. Never bury a `savefig` inside model
+or ingest code.
+
 ## Data sources
 
 | Input | Source |

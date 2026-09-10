@@ -200,8 +200,10 @@ if __name__ == "__main__":
     run_dir.mkdir(parents=True, exist_ok=True)
 
     fig, res = figure_m0(COST, PMAX, DEMAND)
+    # publication figure: 300 dpi raster plus a vector copy
     out = run_dir / "m0_merit_order.png"
-    fig.savefig(out, dpi=160, facecolor=SURFACE)
+    fig.savefig(out, dpi=300, facecolor=SURFACE, bbox_inches="tight")
+    fig.savefig(run_dir / "m0_merit_order.pdf", facecolor=SURFACE, bbox_inches="tight")
 
     if pathlib.Path("configs/m0.yaml").exists():
         shutil.copy("configs/m0.yaml", run_dir / "config.yaml")
