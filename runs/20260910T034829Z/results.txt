@@ -1,0 +1,7 @@
+demand_mw: 150.0
+lambda_usd_per_mwh: 35.0
+production_cost_usd: 3750.0
+load_payment_usd: 5250.0
+dispatch_g1_mw: 100.0
+dispatch_g2_mw: 50.0
+dispatch_g3_mw: 0.0
