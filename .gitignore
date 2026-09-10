@@ -1,0 +1,17 @@
+# data/raw/ is append-only and never committed
+data/raw/*
+!data/raw/.gitkeep
+
+# derived
+data/interim/*
+!data/interim/.gitkeep
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+
+# os
+.DS_Store
