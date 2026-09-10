@@ -1,0 +1,21 @@
+{
+  "source": "EIA-930 Hourly Grid Monitor, API v2",
+  "respondent": "ERCO",
+  "type": "D",
+  "local_date": "2024-08-19",
+  "local_timezone": "America/Chicago",
+  "start_utc": "2024-08-19T05:00:00+00:00",
+  "end_utc_exclusive": "2024-08-20T05:00:00+00:00",
+  "hours": 24,
+  "raw_file": "data/raw/eia930/eia930_ERCO_D_20240819T0500Z_20240820T0500Z.json",
+  "config": "configs/m2.yaml",
+  "scaling_method": "peak_fraction_of_fleet_capacity",
+  "peak_fraction": 0.9,
+  "scale_factor": 0.003166672530875057,
+  "fleet_capacity_mw": 300.0,
+  "system_peak_mw": 85263.0,
+  "system_trough_mw": 55616.0,
+  "system_peak_trough_ratio": 1.5330660241657077,
+  "scaled_peak_mw": 270.0,
+  "scaled_trough_mw": 176.11765947714719
+}

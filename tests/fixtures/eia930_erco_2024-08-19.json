@@ -1,0 +1,180 @@
+{
+ "response": {
+  "total": "24",
+  "dateFormat": "YYYY-MM-DD\"T\"HH24",
+  "frequency": "hourly",
+  "data": [
+   {
+    "period": "2024-08-19T05",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "66780",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T06",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "62895",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T07",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "60114",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T08",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "57869",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T09",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "56529",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T10",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "55616",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T11",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "55754",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T12",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "57055",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T13",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "57529",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T14",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "60630",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T15",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "64323",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T16",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "68925",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T17",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "73443",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T18",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "78357",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T19",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "82197",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T20",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "83458",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T21",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "84136",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T22",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "84706",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-19T23",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "85263",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-20T00",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "84161",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-20T01",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "81184",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-20T02",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "78079",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-20T03",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "75886",
+    "value-units": "megawatthours"
+   },
+   {
+    "period": "2024-08-20T04",
+    "respondent": "ERCO",
+    "type": "D",
+    "value": "71559",
+    "value-units": "megawatthours"
+   }
+  ],
+  "description": "Hourly demand, day-ahead demand forecast, net generation, and interchange by balancing authority.  \n    Source: Form EIA-930\n    Product: Hourly Electric Grid Monitor"
+ },
+ "apiVersion": "2.1.13",
+ "ExcelAddInVersion": "2.1.0"
+}

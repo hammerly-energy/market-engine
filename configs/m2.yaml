@@ -1,0 +1,63 @@
+name: m2
+description: >
+  The m1 fleet, unchanged, cleared against real ERCOT demand from EIA-930
+  instead of a synthetic shape. The milestone is the ingest boundary and the
+  UTC discipline, not a new formulation: solve_dispatch_day is untouched.
+  Exactly one variable changes from m1 -- where the load numbers come from --
+  so anything that differs in the answer is attributable to the data.
+
+# Unchanged from m1. Deliberately: see description.
+fleet:
+  g1: {cost_usd_per_mwh: 20.0, pmax_mw: 100.0}
+  g2: {cost_usd_per_mwh: 35.0, pmax_mw: 100.0}
+  g3: {cost_usd_per_mwh: 80.0, pmax_mw: 100.0}
+
+load:
+  source: eia930
+  respondent: ERCO          # ERCOT. type=D, metered demand, not the forecast.
+  local_date: "2024-08-19"  # summer peak day, ~85.3 GW
+
+  # A UTC calendar day is not a market day. 2024-08-19T00Z is 19:00 Aug 18 in
+  # Central, so a naive [T00, T23] window straddles two ERCOT days and cuts
+  # the evening ramp in half. market_day_window() resolves this local date
+  # into the UTC instants that bound it -- 2024-08-19T05Z .. 2024-08-20T05Z --
+  # and the index stays UTC from there on. The timezone is used once, at the
+  # ingest boundary, and never reaches the Scenario.
+  window: local_market_day
+
+  # ---------------------------------------------------------------- scaling
+  # ERCOT peaks at ~85,300 MW; the fleet is 300 MW. Real load cannot be fed in
+  # unscaled, so a factor is required and the choice must be justified.
+  #
+  # RULE       factor = (total fleet capacity * peak_fraction) / max(load)
+  # HERE       factor = (300 MW * 0.90) / 85,263 MW = 0.0031667
+  #            the day's peak lands at 270 MW.
+  #
+  # WHY peak-normalize, and why 0.90:
+  #   - Normalizing on the PEAK is the binding end of the day. It is the hour
+  #     that decides whether the day clears at all, so it is the hour worth
+  #     pinning; normalizing on the mean or the trough leaves the peak free to
+  #     land above total capacity and go infeasible for a reason that has
+  #     nothing to do with the market.
+  #   - 0.90 rather than 1.00 keeps the peak hour OFF the 300 MW capacity
+  #     breakpoint. At exactly 300 MW no unit is marginal, the dual is not
+  #     unique (trap 3), and the most interesting hour of the day would price
+  #     arbitrarily. The reserve margin reading is a happy accident, not the
+  #     justification.
+  #   - It is a linear rescale, so it preserves the shape and every ratio in
+  #     it. It CANNOT change the peak-to-trough ratio, and that is the finding
+  #     this scenario records: see notes below.
+  scaling:
+    method: peak_fraction_of_fleet_capacity
+    peak_fraction: 0.90
+
+notes: >
+  ERCOT on this day swings 85,263 / 55,616 = 1.53 : 1. The m1 synthetic day
+  swings 263 / 54 = 4.9 : 1. Real load is far flatter than the shape that was
+  invented for it. Scaled onto breakpoints at 100 / 200 / 300 MW the whole day
+  sits between 176 and 270 MW, so g1 runs flat out for all 24 hours and never
+  sets the price -- lambda is only ever 35 or 80. No choice of factor can fix
+  that, because a linear rescale cannot stretch a 1.53 ratio past 2.0, which
+  is what it would take to put the trough under 100 MW and the peak over 200.
+  The fleet was deliberately NOT resized to hide this. Cheap baseload that
+  runs flat out and never sets price is what real baseload does.
