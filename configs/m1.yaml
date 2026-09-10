@@ -1,0 +1,25 @@
+name: m1
+description: >
+  Same 3-generator single-bus fleet as m0, solved jointly across 24 hours
+  against a hardcoded synthetic load shape. No data source, no timezone, no
+  ramp limits -- nothing couples one hour to the next. The milestone is done
+  when the joint solve reproduces 24 independent single-hour solves exactly.
+
+fleet:
+  g1: {cost_usd_per_mwh: 20.0, pmax_mw: 100.0}
+  g2: {cost_usd_per_mwh: 35.0, pmax_mw: 100.0}
+  g3: {cost_usd_per_mwh: 80.0, pmax_mw: 100.0}
+
+horizon:
+  hours: 24
+  # Hour index only. No timezone at m1 -- t is 0..23 and means nothing more.
+  # UTC discipline arrives with the ingest boundary at m2.
+
+# Synthetic. Overnight trough, morning ramp, midday shoulder, evening peak.
+# Every value is deliberately off a capacity breakpoint (100, 200, 300 MW), so
+# every hour has a unique marginal unit and therefore a unique dual.
+load_mw:
+  [ 62,  58,  55,  54,  57,  68,   # 00-05  overnight, g1 alone
+    92, 118, 146, 162, 171, 178,   # 06-11  morning ramp into g2
+   183, 186, 181, 176, 188, 214,   # 12-17  midday shoulder, evening ramp
+   247, 263, 238, 192, 141,  88]   # 18-23  peak into g3, then decline

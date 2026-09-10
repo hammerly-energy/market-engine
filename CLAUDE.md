@@ -123,7 +123,18 @@ prose — the image carries the evidence.
   Sentence case, not Title Case. Identifiers that come from the data (`g1`, bus
   names, `λ`) keep their literal form.
 - **No bold, restrained type scale.** Roughly 8.5–10.5 pt. Emphasis comes from
-  position and whitespace, not weight.
+  position and whitespace, not weight. This holds for text sitting on a shaded
+  fill too — fix its legibility with font *color*, never with weight.
+- **One typographic hierarchy, strictly ordered.** Panel title (10.5 pt) >
+  axis label (9.5 pt) > annotation (8.5–9 pt) > tick label (8.5 pt). There is
+  no tier above panel title, because there is no figure-level title.
+- **Text over a shaded area takes a contrasting ink.** Surface-white on a deep
+  fill, dark ink on a light one. Check it against the *rendered* fill, which is
+  the color times its alpha over the surface, not the nominal hex.
+- **Units keep their real capitalization.** `MW`, `MWh`, `$/MWh`, `$/MMBtu` —
+  never `mw`, `mwh`. Case is meaning: `m` is milli and `M` is mega.
+- **Identifiers match the prose and the equations.** If the text says `g1` and
+  `λ`, the figure says `g1` and `λ` — not `G1`, not `Lambda`.
 - **No arrow annotations.** Arrows collide with the labels they point at and
   almost always mean the text is in the wrong place. Put the text on empty
   ground adjacent to what it describes.
@@ -132,7 +143,8 @@ prose — the image carries the evidence.
 
 ### Construction
 
-- **Axes are labeled with units.** `$/MWh`, `MW`, `MWh`, UTC timestamps. Always.
+- **Axes are labeled with units, in parentheses, at the end.** `Dispatch (MW)`,
+  `Clearing price λ ($/MWh)`, UTC timestamps. Always.
 - **Colorblind-safe palette, validated, not eyeballed.** Assign hues by identity
   in a fixed order; never cycle. Sequential data gets one hue light-to-dark;
   diverging data gets two hues with a neutral midpoint. Never a rainbow.
@@ -142,6 +154,20 @@ prose — the image carries the evidence.
   two panels or an indexed common base.
 - **Recessive grid and axes.** No top or right spine, no heavy gridlines, no
   chartjunk, no 3-D, no drop shadows.
+- **Gridlines earn their place by helping the eye reach an axis.** A 24-hour
+  series carries ticks and vertical gridlines every 6 hours, so the day has a
+  visible rhythm and a reader can find the evening ramp without counting.
+- **Annotations over a gridline or a data line get a bbox.**
+  `bbox=dict(facecolor=SURFACE, alpha=0.75, edgecolor="none", pad=1.5)` — a
+  line struck through a label is a silent failure, and moving the text is not
+  always possible. Anchor a set of related annotations the same way relative to
+  the feature each describes; do not alternate above and below to dodge.
+- **Overlapping marks get a thin surface-colored edge** so a cluster reads as
+  several points rather than one blob. Scatter, stacked fills, and adjacent
+  bars alike.
+- **Let a layout manager do the spacing.** `constrained_layout=True` or
+  `tight_layout()`, never hand-tuned margins. A colorbar is allocated its own
+  width and padding; it must not squeeze the panel it belongs to.
 - **Curves are computed, not drawn.** A price-vs-demand staircase is many solves,
   not a hand-placed polyline. If the figure asserts something about the model,
   the model has to produce it.
