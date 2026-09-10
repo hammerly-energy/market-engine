@@ -92,6 +92,10 @@ market-engine/
 - Every run writes its config into `runs/<timestamp>/` so results are reproducible.
 - `data/raw/` is append-only. Never edit a downloaded file.
 - Actuals in `src/ingest/actuals.py` are a held-out answer key. Never let them reach a `Scenario`.
+- **Never commit automatically.** Make the changes, run the tests, report what
+  changed, and stop. The author decides what gets committed and when, and writes
+  the commit. Do not run `git commit`, `git push`, or `git add` unless explicitly
+  asked in that message.
 - **Test files are named `test_<milestone>_<context>.py`** — e.g. `test_m0_single_bus.py`, `test_m2_network.py`. The milestone says *when* a test was written and ties it to the table below; the context says *what physical setup it covers*, which is what still means something at M5. A milestone alone (`test_m0.py`) ages into a date stamp. A context alone loses the spine of the repo.
   Inside the file, group tests by lifespan, not by milestone: invariants that hold forever (energy balance, capacity bounds, cost consistency) belong in their own class, separate from the special cases a later milestone supersedes. The settlement identity at M0 is the example — it holds with congestion pinned at zero, and M2 replaces that zero with a real congestion term rather than deleting the test.
 
@@ -101,10 +105,33 @@ market-engine/
 article, at column width, in grayscale, next to a caption. Nothing in this repo
 gets a default-styled throwaway chart.
 
-Non-negotiable:
+### Register
 
-- **The title states the finding, not the variables.** "Price is a staircase;
-  the risers are where the dual breaks down" — not "lambda vs demand."
+A figure labels; it does not narrate. The argument lives in the caption and in
+prose — the image carries the evidence.
+
+- **Titles are nominal phrases, not claims.** "Clearing price against demand" —
+  not "Price is a staircase; the risers are where the dual breaks down." If a
+  sentence is worth saying, say it in the caption.
+- **Multi-panel figures use `(a)`, `(b)` labels**, set left, in the panel title.
+  No figure-level suptitle and no subtitle sentence.
+- **Annotations are terse.** `λ = 35`, `λ ∈ [20, 35]`. Not `λ = $35/MWh — the
+  dual on energy balance`, not `no unique price`.
+- **Units appear once, on the axis label.** Never repeated on every mark.
+- **Capitalize every piece of display text.** Titles, panel labels, axis labels,
+  legend entries, annotations, and inset tables all begin with a capital letter.
+  Sentence case, not Title Case. Identifiers that come from the data (`g1`, bus
+  names, `λ`) keep their literal form.
+- **No bold, restrained type scale.** Roughly 8.5–10.5 pt. Emphasis comes from
+  position and whitespace, not weight.
+- **No arrow annotations.** Arrows collide with the labels they point at and
+  almost always mean the text is in the wrong place. Put the text on empty
+  ground adjacent to what it describes.
+- **Resolve collisions by moving text, not by shrinking it.** If nothing fits,
+  the figure has too much in it — cut content or split the panel.
+
+### Construction
+
 - **Axes are labeled with units.** `$/MWh`, `MW`, `MWh`, UTC timestamps. Always.
 - **Colorblind-safe palette, validated, not eyeballed.** Assign hues by identity
   in a fixed order; never cycle. Sequential data gets one hue light-to-dark;
@@ -115,11 +142,23 @@ Non-negotiable:
   two panels or an indexed common base.
 - **Recessive grid and axes.** No top or right spine, no heavy gridlines, no
   chartjunk, no 3-D, no drop shadows.
+- **Curves are computed, not drawn.** A price-vs-demand staircase is many solves,
+  not a hand-placed polyline. If the figure asserts something about the model,
+  the model has to produce it.
 - **300 dpi raster plus a vector copy** (PDF or SVG). Raster alone is not
   publishable.
-- **Render it and look at it before accepting it.** Silent failures are the norm
-  in matplotlib: unescaped `$` becomes mathtext, labels collide, text overflows
-  the axes. None of these raise. Open the file and inspect it every time.
+
+### Before accepting a figure
+
+**Render it and look at it. Every time.** Silent failures are the norm in
+matplotlib: an unescaped `$` swallows the rest of the string into mathtext,
+labels overlap, text overflows the axes. None of these raise, and no test
+catches them. Open the file and inspect it.
+
+Expect to iterate. Moving one label routinely creates a collision somewhere
+else, so re-render and re-inspect after every adjustment.
+
+### Placement
 
 Figures are written into `runs/<timestamp>/` alongside the config snapshot that
 produced them, so any figure can be traced back to the exact solve behind it.

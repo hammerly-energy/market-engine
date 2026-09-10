@@ -83,9 +83,9 @@ def _panel_stack(ax, c, Pmax, D, res):
 
     payment = D * lmbda
     ax.text(0.985, 0.965,
-            f"production cost   {res['cost']:>7,.0f}\n"
-            f"producer surplus  {payment - res['cost']:>7,.0f}\n"
-            f"load payment      {payment:>7,.0f}",
+            f"Production cost   {res['cost']:>7,.0f}\n"
+            f"Producer surplus  {payment - res['cost']:>7,.0f}\n"
+            f"Load payment      {payment:>7,.0f}",
             transform=ax.transAxes, ha="right", va="top",
             fontsize=8.5, color=INK_2, family="monospace", linespacing=1.5)
 
