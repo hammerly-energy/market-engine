@@ -96,8 +96,8 @@ market-engine/
   changed, and stop. The author decides what gets committed and when, and writes
   the commit. Do not run `git commit`, `git push`, or `git add` unless explicitly
   asked in that message.
-- **Test files are named `test_<milestone>_<context>.py`** — e.g. `test_m0_single_bus.py`, `test_m2_network.py`. The milestone says *when* a test was written and ties it to the table below; the context says *what physical setup it covers*, which is what still means something at M5. A milestone alone (`test_m0.py`) ages into a date stamp. A context alone loses the spine of the repo.
-  Inside the file, group tests by lifespan, not by milestone: invariants that hold forever (energy balance, capacity bounds, cost consistency) belong in their own class, separate from the special cases a later milestone supersedes. The settlement identity at M0 is the example — it holds with congestion pinned at zero, and M2 replaces that zero with a real congestion term rather than deleting the test.
+- **Test files are named `test_<milestone>_<context>.py`** — e.g. `test_m0_single_bus.py`, `test_m3_network.py`. The milestone says *when* a test was written and ties it to the table below; the context says *what physical setup it covers*, which is what still means something at M7. A milestone alone (`test_m0.py`) ages into a date stamp. A context alone loses the spine of the repo.
+  Inside the file, group tests by lifespan, not by milestone: invariants that hold forever (energy balance, capacity bounds, cost consistency) belong in their own class, separate from the special cases a later milestone supersedes. The settlement identity at M0 is the example — it holds with congestion pinned at zero, and M3 replaces that zero with a real congestion term rather than deleting the test.
 
 ## Visualization
 
@@ -189,19 +189,25 @@ Offers start as a cost proxy: `fuel_price * heat_rate + VOM`. Upgrade to real ER
 
 ## Milestones
 
-Start at M0.
+Start at M0. Each milestone adds exactly one new way to be wrong — one new
+failure surface — so that when a result looks wrong there is only one place to
+look. A milestone is done when its **Goal** column is demonstrably true, not
+when the code runs.
 
-| | Goal | Est. |
-|---|---|---|
-| M0 | 3 generators, 1 bus, 1 hour. Verify by hand that the dual equals the marginal unit's cost. | 45 min |
-| M1 | Same fleet, 24 hours, real EIA-930 load shape. | a weekend |
-| M2 | PJM 5-bus example with DC network. Reproduce published LMPs exactly, commit as a test. | 1 week |
-| M3 | RTS-GMLC, full DC OPF, one day, settlement identity check passing. | 2 weeks |
-| M4 | Unit commitment: startup cost, min up/down, min output. Two-pass structure. | 2 weeks |
-| M5 | Storage plus energy/reserve co-optimization. | 2 weeks |
-| M6 | Real fleet and load, validate against published LMPs, write up. | 2 weeks |
+| | Milestone | Description | Goal — done when this is true | Est. |
+|---|---|---|---|---|
+| **M0** ✓ | Single-bus clearing | 3 generators, 1 bus, 1 hour. LP dispatch, minimize offer cost subject to one energy-balance equality. Price read off the dual on that constraint. | λ equals the marginal unit's offer, verified by hand and asserted in tests. Degenerate breakpoints assert bounds, not values. Settlement identity holds with the congestion term at zero. | 45 min |
+| **M1** | Time indexing | Same fleet, 24 hours, hardcoded synthetic load shape. `p[g,t]`, 24 balance constraints, 24 duals. No data source, no timezone, no ramp limits. | A joint 24-hour solve reproduces 24 independent single-hour solves *exactly*. Hours are provably separable, because nothing yet couples them. | an evening |
+| **M2** | Real load data | Replace the synthetic shape with EIA-930 hourly demand, API v2. Establishes the ingest → `Scenario` boundary and the UTC discipline. | Row count asserted against hours requested; index is UTC with no gaps or duplicates; the scaling choice from system load to fleet capacity is written down and justified. | a weekend |
+| **M3** | DC network and congestion | PJM 5-bus example. Susceptance matrix, PTDF relative to a slack, line flow limits. `LMP[i] = λ + Σ PTDF[l,i]·μ[l]`. | Published PJM 5-bus LMPs reproduced exactly and committed as a regression test. Price *differences* invariant to slack choice. | 1 week |
+| **M4** | Full DC OPF at scale | RTS-GMLC network, fleet, and profiles. One full day, every hour, real topology. | Settlement identity holds to floating-point tolerance on every hour: `Σ load payments − Σ gen revenue == Σ μ[l]·limit[l]`. | 2 weeks |
+| **M5** | Unit commitment | Startup cost, min up/down time, min stable output. MILP for the binaries, then re-solve as an LP with binaries fixed. | The two-pass structure produces valid duals where the MILP alone cannot. No unit runs below its minimum. M1's separability test now *fails*, and you can explain exactly why. | 2 weeks |
+| **M6** | Storage and reserves | Energy and reserve co-optimization. Storage state of charge, charge/discharge, round-trip efficiency. | Reserve price appears as its own dual. Storage arbitrages the price spread without being told to. Energy and reserve prices are jointly consistent. | 2 weeks |
+| **M7** | Validation and write-up | Real fleet and real load. Compare against published LMPs pulled by `gridstatus` — the held-out answer key, touched here for the first time. | Structural agreement with published prices: price separation events, the evening ramp, negative hours. Every residual gap is explained as a market feature not yet modeled, not tuned away. | 2 weeks |
 
-Do not skip to a later milestone. Each one's test suite is the foundation for the next.
+Do not skip to a later milestone. Each one's test suite is the foundation for the
+next, and the invariants established early are what catch the subtle failures
+later.
 
 ## Known traps
 
