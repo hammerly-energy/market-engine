@@ -83,6 +83,151 @@ def _check_day_inputs(c, Pmax, D):
             raise ValueError(f"negative demand in hour {t}: {mw}")
 
 
+
+def solve_dispatch_network_day(c, Pmax, D, gen_bus, buses, PTDF, Fmax):
+    """Clear a NODAL energy market across a set of hours, on a DC network.
+
+    c        -- {gen: marginal cost $/MWh}      same in every hour
+    Pmax     -- {gen: capacity MW}              same in every hour
+    D        -- {bus: {t: MW}}                  from Scenario.demand_by_bus()
+    gen_bus  -- {gen: bus}
+    buses    -- ordered bus names; fixes the PTDF COLUMN order
+    PTDF     -- (L, N) array; rows ordered as Fmax's keys
+    Fmax     -- {line: MW}, .inf allowed        fixes the PTDF ROW order
+
+    Returns {"p": {(gen, t): MW}, "lmbda": {t: $/MWh}, "cost": $,
+             "f": {(line, t): MW}, "mu_up"/"mu_dn": {(line, t): $/MWh}}.
+    Raises RuntimeError if the solve is not optimal.
+
+    Sits ALONGSIDE solve_dispatch_day, not in place of it. That one clears a
+    single bus and its lambda is the whole price; this one adds the network,
+    and lambda becomes only the energy component. Keeping both means M1's
+    separability tests still have their model to run against.
+
+    The two orderings above are the load-bearing part. PTDF[l, i] means
+    nothing without knowing which l and which i, and a transposed row here
+    reappears later as an inexplicable price at the wrong bus.
+
+    Prices are NOT assembled here. This returns the two dual families raw;
+    src/model/pricing.py combines them into
+    LMP[i, t] = lmbda[t] + sum_l PTDF[l, i] * mu[l, t].
+
+    Nothing here may reference two different t. That is still M1's rule --
+    the network couples BUSES within an hour, never hours to each other.
+    """
+    m = pyo.ConcreteModel()
+
+    # 1. index sets. G is the fleet, T is the horizon, B and L the network.
+    #    D is keyed by bus now, so the hours are one level down and have to
+    #    be gathered across buses -- sorted(D) would give bus names. Sorted
+    #    for determinism: build order decides which vertex simplex reports at
+    #    a degenerate hour, so a stable order keeps a degenerate price
+    #    reproducible.
+    #
+    #    B and L take their order from the caller, not from sorting, because
+    #    that order IS the PTDF's column and row order.
+    m.G = pyo.Set(initialize=list(c))
+    m.T = pyo.Set(initialize=sorted({t for per_bus in D.values() for t in per_bus}),
+                  ordered=True)
+    m.B = pyo.Set(initialize=list(buses), ordered=True)
+    m.L = pyo.Set(initialize=list(Fmax), ordered=True)
+
+    # 2. one variable per generator PER HOUR, bounded 0..Pmax
+    #    Unchanged from the single-bus model. A generator's capacity does not
+    #    depend on where it sits -- the network constrains the FLOW between
+    #    buses, not the machine.
+    m.p = pyo.Var(m.G, m.T, bounds=lambda m, g, t: (0, Pmax[g]))
+
+    # 3. minimize total cost over the whole horizon
+    #    No transmission term. A DC line is lossless, so moving power costs
+    #    nothing; congestion shows up as a binding constraint, never as a
+    #    price in the objective.
+    m.cost = pyo.Objective(
+        expr=sum(c[g] * m.p[g, t] for g in m.G for t in m.T),
+        sense=pyo.minimize,
+    )
+
+    # 4. energy balance -- one EQUALITY PER HOUR. these carry lambda.
+    #    Still SYSTEM-wide, not per bus: total generation equals total load.
+    #    The network decides where the power can physically go, and that is
+    #    step 6's job; this only says the books balance. One dual per hour,
+    #    the same at every bus, which is exactly the energy component.
+    def _balance(m, t):
+        return sum(m.p[g, t] for g in m.G) == sum(D[i][t] for i in buses)
+
+    m.balance = pyo.Constraint(m.T, rule=_balance)
+
+    # 5. net injection and line flow. EXPRESSIONS, not constraints.
+    #    An Expression names a sum; it asserts nothing and carries no dual.
+    #    inj is generation at a bus minus load there -- positive for a net
+    #    source. f is the PTDF definition applied to it: each line's flow is
+    #    a weighted sum of every injection in the system, which is what makes
+    #    a network different from a single bus.
+    #
+    #    Writing these as constraints instead would work, but it would create
+    #    dual families that mean nothing and clutter the settlement identity.
+    def _inj(m, i, t):
+        return sum(m.p[g, t] for g in m.G if gen_bus[g] == i) - D[i][t]
+
+    m.inj = pyo.Expression(m.B, m.T, rule=_inj)
+
+    # Position lookups, because PTDF is a plain array and indexes by integer.
+    col = {b: j for j, b in enumerate(buses)}
+    row = {l: k for k, l in enumerate(Fmax)}
+
+    def _flow(m, l, t):
+        return sum(PTDF[row[l], col[i]] * m.inj[i, t] for i in m.B)
+
+    m.f = pyo.Expression(m.L, m.T, rule=_flow)
+
+    # 6. line limits -- TWO ONE-SIDED CONSTRAINTS PER LINE, never one ranged.
+    #    A line is rated the same in both directions, so -Fmax <= f <= Fmax
+    #    is the physics. Written as a single ranged constraint Pyomo returns
+    #    ONE dual, and its sign no longer says which direction bound. Split
+    #    into two, at most one of them binds, and the sign is unambiguous.
+    #    This is the top cause of a broken settlement identity.
+    #
+    #    An .inf limit builds a trivially-true constraint whose dual is zero.
+    #    That is deliberate -- every line keeps a row, so the caller never has
+    #    to check whether a key exists.
+    m.mu_up = pyo.Constraint(m.L, m.T, rule=lambda m, l, t: m.f[l, t] <= Fmax[l])
+    m.mu_dn = pyo.Constraint(m.L, m.T, rule=lambda m, l, t: -m.f[l, t] <= Fmax[l])
+
+    # 7. ask for duals BEFORE solving. omit this and m.dual is empty
+    m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
+
+    # 8. solve
+    #    load_solutions=False so an infeasible model reports its status
+    #    instead of raising while trying to load a solution that is not there.
+    #    Infeasible now has a second cause it did not have at M1: enough
+    #    capacity in total, but no way to deliver it through the network.
+    res = pyo.SolverFactory("appsi_highs").solve(m, load_solutions=False)
+    tc = res.solver.termination_condition
+    if tc != pyo.TerminationCondition.optimal:
+        raise RuntimeError(f"solve not optimal: {tc}")
+    m.solutions.load_from(res)
+
+    # 9. unpack. m.dual is indexed by the CONSTRAINT OBJECT -- m.balance[t],
+    #    not a bare t. Expressions evaluate after the solve like anything
+    #    else, so f comes back through pyo.value.
+    #
+    #    The mu are returned RAW, in the solver's own sign convention, and
+    #    are not yet the congestion prices. HiGHS reports a binding <=
+    #    constraint with a non-positive dual, so a congested line shows up as
+    #    a negative mu_dn. pricing.py is where mu = mu_up - mu_dn resolves
+    #    that into one signed number per line and the settlement identity
+    #    becomes checkable.
+    return {
+        "p": {(g, t): pyo.value(m.p[g, t]) for g in m.G for t in m.T},
+        "lmbda": {t: m.dual[m.balance[t]] for t in m.T},
+        "cost": pyo.value(m.cost),
+        "f": {(l, t): pyo.value(m.f[l, t]) for l in m.L for t in m.T},
+        "mu_up": {(l, t): m.dual[m.mu_up[l, t]] for l in m.L for t in m.T},
+        "mu_dn": {(l, t): m.dual[m.mu_dn[l, t]] for l in m.L for t in m.T},
+    }
+
+
+
 def solve_dispatch_day(c, Pmax, D):
     """Clear a single-bus energy market jointly across a set of hours.
 

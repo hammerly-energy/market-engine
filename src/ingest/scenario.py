@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 
 from src.ingest import eia930
-from src.model.inputs import Bus, Generator, Load, Scenario
+from src.model.inputs import Branch, Bus, Generator, Load, Scenario
 
 SINGLE_BUS = "bus1"
 
@@ -29,7 +29,7 @@ def _fleet(config):
     return tuple(
         Generator(
             name=name,
-            bus=SINGLE_BUS,
+            bus=spec.get("bus", SINGLE_BUS),
             cost_usd_per_mwh=float(spec["cost_usd_per_mwh"]),
             pmax_mw=float(spec["pmax_mw"]),
             pmin_mw=float(spec.get("pmin_mw", 0.0)),
@@ -38,25 +38,20 @@ def _fleet(config):
     )
 
 
-def build_scenario(config_path, api_key=None):
-    """Assemble the Scenario a config declares. No solving, no plotting.
+STATIC_HOUR = "static"
 
-    The scale factor is computed here, from the fleet in the same config, and
-    recorded in provenance. It is never hardcoded and never defaulted: a
-    config without a scaling block is an error, because an unjustified
-    rescale of real load is exactly the thing M2 exists to make explicit.
+
+def _loads_eia930(spec, capacity, api_key):
+    """Real hourly demand at a single bus. The M2 path, unchanged.
+
+    The scaling guards live here rather than in build_scenario so that adding
+    a second source cannot quietly make them optional: an unjustified rescale
+    of real load is the thing M2 exists to make explicit.
     """
-    config = load_config(config_path)
-    generators = _fleet(config)
-    capacity = sum(g.pmax_mw for g in generators)
-
-    spec = config["load"]
-    if spec.get("source") != "eia930":
-        raise ValueError(f"unsupported load source {spec.get('source')!r}")
     if "scaling" not in spec:
         raise ValueError(
-            f"{config_path}: load.scaling is required; real load must not be "
-            f"rescaled onto a toy fleet without the choice being written down"
+            "load.scaling is required; real load must not be rescaled onto a "
+            "toy fleet without the choice being written down"
         )
     scaling = spec["scaling"]
     if scaling.get("method") != "peak_fraction_of_fleet_capacity":
@@ -71,11 +66,9 @@ def build_scenario(config_path, api_key=None):
 
     provenance = dict(provenance)
     provenance.update({
-        "config": str(config_path),
         "scaling_method": scaling["method"],
         "peak_fraction": float(scaling["peak_fraction"]),
         "scale_factor": factor,
-        "fleet_capacity_mw": capacity,
         "system_peak_mw": float(system_mw.max()),
         "system_trough_mw": float(system_mw.min()),
         "system_peak_trough_ratio": float(system_mw.max() / system_mw.min()),
@@ -85,16 +78,95 @@ def build_scenario(config_path, api_key=None):
 
     # pandas Timestamps become ISO-8601 UTC strings HERE. Past this line the
     # model layer has no pandas dependency and no timezone to get wrong.
-    load = Load(
-        bus=SINGLE_BUS,
-        mw={t.isoformat(): float(mw) for t, mw in scaled_mw.items()},
+    loads = (Load(bus=SINGLE_BUS,
+                  mw={t.isoformat(): float(mw) for t, mw in scaled_mw.items()}),)
+    return loads, provenance
+
+
+def _loads_static(spec):
+    """Demand declared per bus in the config. One snapshot, no clock.
+
+    M3 changes the network and holds the load source still, so that the
+    milestone adds exactly one new failure surface. There are no timestamps to
+    carry, so the single hour is labelled "static" rather than given a
+    fabricated UTC time -- a made-up timestamp would look like real data and
+    would sort alongside M2's hours as though it belonged there.
+
+    The hour label is opaque to the solver: solve_dispatch_day already accepts
+    any hashable, and Scenario.hours sorts whatever it is given.
+    """
+    mw = spec["mw"]
+    if not mw:
+        raise ValueError("load.mw is empty: no demand to serve")
+    loads = tuple(
+        Load(bus=bus, mw={STATIC_HOUR: float(v)}) for bus, v in mw.items()
     )
+    return loads, {"load_source": "static", "static_load_mw": dict(mw)}
+
+
+def _network(config):
+    """Buses and branches. Empty before M3, and empty is a claim, not a gap."""
+    net = config.get("network")
+    if net is None:
+        return (Bus(SINGLE_BUS),), ()
+
+    # Bus order is the config's, and it is load-bearing: it fixes the column
+    # order of every matrix in src/network/.
+    buses = tuple(Bus(name) for name in net["buses"])
+    branches = tuple(
+        Branch(
+            name=name,
+            from_bus=spec["from"],
+            to_bus=spec["to"],
+            reactance_pu=float(spec["reactance_pu"]),
+            limit_mw=float(spec["limit_mw"]),
+        )
+        for name, spec in net.get("branches", {}).items()
+    )
+    return buses, branches
+
+
+def build_scenario(config_path, api_key=None):
+    """Assemble the Scenario a config declares. No solving, no plotting.
+
+    Dispatches on load.source. Each source owns its own validation, so a new
+    one cannot inherit another's guards by accident.
+    """
+    config = load_config(config_path)
+    generators = _fleet(config)
+    capacity = sum(g.pmax_mw for g in generators)
+
+    spec = config["load"]
+    source = spec.get("source")
+    if source == "eia930":
+        loads, provenance = _loads_eia930(spec, capacity, api_key)
+    elif source == "static":
+        loads, provenance = _loads_static(spec)
+    else:
+        raise ValueError(f"unsupported load source {source!r}")
+
+    buses, branches = _network(config)
+    known = {b.name for b in buses}
+    for g in generators:
+        if g.bus not in known:
+            raise ValueError(f"generator {g.name} at unknown bus {g.bus!r}")
+
+    provenance = dict(provenance)
+    provenance.update({
+        "config": str(config_path),
+        "fleet_capacity_mw": capacity,
+    })
+    if "slack" in config.get("network", {}):
+        # Not a Scenario field: the slack is a choice the pricing code makes,
+        # and trap 2 says nothing physical depends on it. Recorded so a run
+        # can be reproduced, not so the solver can read it back.
+        provenance["slack"] = config["network"]["slack"]
 
     return Scenario(
         name=config["name"],
         generators=generators,
-        loads=(load,),
-        buses=(Bus(SINGLE_BUS),),
-        branches=(),           # no network until M3
+        loads=loads,
+        buses=buses,
+        branches=branches,
         provenance=provenance,
     )

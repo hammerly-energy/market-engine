@@ -1,4 +1,4 @@
-r"""M3 network tests: incidence, susceptance, PTDF. No solver, no prices yet.
+r"""M3 network tests: incidence, susceptance, PTDF, and the nodal clearing.
 
 Everything here is hand-checkable. The point of M3 is that exactly one new
 failure surface opens -- the network -- so these tests pin the linear algebra
@@ -38,7 +38,10 @@ import numpy as np
 import pytest
 import yaml
 
+from src.ingest.scenario import build_scenario
+from src.model.dispatch import solve_dispatch_network_day
 from src.model.inputs import Branch
+from src.model.pricing import congestion_prices, lmps
 from src.network.ptdf import ptdf
 from src.network.topology import b_bus, b_branch, b_flow, incidence
 
@@ -351,3 +354,249 @@ class TestCase5Network:
         P = ptdf(buses, branches, slack)
         de = [b.name for b in branches].index("DE")
         assert P[de, buses.index("E")] == pytest.approx(-0.4805, abs=1e-4)
+
+
+# --------------------------------------------------------------------------
+# From here down a solver runs. Everything above is linear algebra with a
+# hand-checkable answer; everything below asks an LP to agree with one.
+
+
+def _clear(limits="config"):
+    """Solve case5 and price it. limits="config" or "none".
+
+    "none" raises every limit to infinity, which must collapse the case to a
+    plain merit-order stack with one system price. That is the test that
+    separates a topology bug from a pricing bug: if the uncongested case is
+    already wrong, no amount of staring at mu will help.
+    """
+    scenario = build_scenario(CONFIG)
+    buses = [b.name for b in scenario.buses]
+    branches = list(scenario.branches)
+    lines = [br.name for br in branches]
+    P = ptdf(buses, branches, scenario.provenance["slack"])
+
+    Fmax = {br.name: (np.inf if limits == "none" else br.limit_mw)
+            for br in branches}
+    gen_bus = {g.name: g.bus for g in scenario.generators}
+    res = solve_dispatch_network_day(
+        c={g.name: g.cost_usd_per_mwh for g in scenario.generators},
+        Pmax={g.name: g.pmax_mw for g in scenario.generators},
+        D=scenario.demand_by_bus(),
+        gen_bus=gen_bus,
+        buses=buses,
+        PTDF=P,
+        Fmax=Fmax,
+    )
+    return {
+        "res": res,
+        "buses": buses,
+        "lines": lines,
+        "PTDF": P,
+        "Fmax": Fmax,
+        "gen_bus": gen_bus,
+        "demand": scenario.demand_by_bus(),
+        "hour": scenario.hours[0],
+    }
+
+
+class TestClearingInvariants:
+    """Holds forever, on any network, congested or not.
+
+    These are the properties M4 will run on RTS-GMLC and M5 will run with
+    binaries fixed. Nothing here mentions case5's numbers.
+    """
+
+    @pytest.mark.parametrize("limits", ["none", "config"])
+    def test_energy_balances(self, limits):
+        s = _clear(limits)
+        t = s["hour"]
+        served = sum(mw for (g, h), mw in s["res"]["p"].items() if h == t)
+        load = sum(d[t] for d in s["demand"].values())
+        assert served == pytest.approx(load)
+
+    @pytest.mark.parametrize("limits", ["none", "config"])
+    def test_no_line_exceeds_its_rating(self, limits):
+        s = _clear(limits)
+        for (l, t), mw in s["res"]["f"].items():
+            assert abs(mw) <= s["Fmax"][l] + 1e-6
+
+    @pytest.mark.parametrize("limits", ["none", "config"])
+    def test_settlement_identity(self, limits):
+        """The primary correctness test (CLAUDE.md).
+
+            sum(load payments) - sum(generator revenue) == sum_l mu[l]*limit[l]
+
+        It is an identity, not a coincidence: it falls out of LP duality, so
+        a failure means PTDF construction, a sign convention, or dual
+        extraction is wrong -- never that the market "didn't settle".
+
+        An unlimited line contributes nothing because its mu is exactly zero,
+        so inf * 0 has to be skipped rather than evaluated.
+        """
+        s = _clear(limits)
+        t = s["hour"]
+        mu = congestion_prices(s["res"])
+        lmp = lmps(s["res"], s["buses"], s["lines"], s["PTDF"])
+
+        payments = sum(s["demand"][i][t] * lmp[i, t] for i in s["buses"])
+        revenue = sum(mw * lmp[s["gen_bus"][g], t]
+                      for (g, h), mw in s["res"]["p"].items() if h == t)
+        rent = sum(mu[l, t] * s["Fmax"][l]
+                   for l in s["lines"] if np.isfinite(s["Fmax"][l]))
+
+        assert payments - revenue == pytest.approx(rent, abs=1e-6)
+
+    @pytest.mark.parametrize("limits", ["none", "config"])
+    def test_at_most_one_direction_binds_per_line(self, limits):
+        """Why the limit is TWO one-sided constraints and not one ranged.
+
+        Flow cannot sit at +Fmax and -Fmax at once, so at most one of the
+        pair can bind and the other's dual is exactly zero. A ranged
+        constraint would collapse them into a single dual whose sign no
+        longer says which bound was active -- the top cause of a broken
+        settlement identity.
+        """
+        s = _clear(limits)
+        for key in s["res"]["mu_up"]:
+            assert (abs(s["res"]["mu_up"][key]) < 1e-9
+                    or abs(s["res"]["mu_dn"][key]) < 1e-9)
+
+    def test_congestion_is_zero_when_nothing_binds(self):
+        """M0's settlement identity, restated rather than deleted.
+
+        At M0 the congestion term was pinned at zero because there was no
+        network to congest. Here there is one, and it still comes to zero
+        when no line binds -- so every LMP collapses back to lambda and the
+        nodal market reduces to the single-bus market it generalises.
+        """
+        s = _clear("none")
+        t = s["hour"]
+        mu = congestion_prices(s["res"])
+        lmp = lmps(s["res"], s["buses"], s["lines"], s["PTDF"])
+        for l in s["lines"]:
+            assert mu[l, t] == pytest.approx(0.0, abs=1e-9)
+        for i in s["buses"]:
+            assert lmp[i, t] == pytest.approx(s["res"]["lmbda"][t])
+
+
+class TestCase5Uncongested:
+    """Both limits raised to infinity. The control case.
+
+    configs/m3.yaml states this expectation in prose; it is asserted here so
+    the config and the code cannot drift apart silently.
+    """
+
+    def test_merit_order_stack(self):
+        """1000 MW served cheapest-first, ignoring the network entirely.
+
+        Brighton 600 at $10, Park City 170 at $15, Alta 40 at $14 -- both of
+        the A units are cheaper than Solitude, so they fill before it -- and
+        Solitude picks up the remaining 190 of its 520. Sundance at $40 never
+        starts.
+        """
+        s = _clear("none")
+        t = s["hour"]
+        p = {g: mw for (g, h), mw in s["res"]["p"].items() if h == t}
+        assert p == pytest.approx({
+            "brighton": 600.0,
+            "park_city": 170.0,
+            "alta": 40.0,
+            "solitude": 190.0,
+            "sundance": 0.0,
+        })
+
+    def test_one_price_everywhere(self):
+        """Solitude is marginal, so lambda is its offer -- at every bus."""
+        s = _clear("none")
+        t = s["hour"]
+        lmp = lmps(s["res"], s["buses"], s["lines"], s["PTDF"])
+        for i in s["buses"]:
+            assert lmp[i, t] == pytest.approx(30.0)
+
+
+class TestCase5Congested:
+    """DE limited to 240 MW. The milestone's headline result.
+
+    Dispatch is checked against MATPOWER's own OPF solution, carried in the
+    Pg column of tests/fixtures/case5.m -- an answer produced by a different
+    program, which is the only kind worth regressing against.
+    """
+
+    def test_dispatch_matches_matpower_opf(self):
+        """Brighton backed down to 466.51, Solitude up to 323.49.
+
+        Read out of the .m file rather than typed here, so the fixture stays
+        the single source of truth. Those are the only two units that move:
+        Alta and Park City are already at their caps and Sundance is still
+        too expensive to start.
+        """
+        s = _clear("config")
+        t = s["hour"]
+        p = {g: mw for (g, h), mw in s["res"]["p"].items() if h == t}
+
+        # mpc.gen columns: bus, Pg, ... -- the dispatch MATPOWER's OPF found.
+        pg = [row[1] for row in _matpower_rows("gen")]
+        expected = dict(zip(["alta", "park_city", "solitude", "sundance",
+                             "brighton"], pg))
+        assert p == pytest.approx(expected, abs=0.01)
+
+    def test_de_is_the_only_binding_line(self):
+        s = _clear("config")
+        t = s["hour"]
+        mu = congestion_prices(s["res"])
+        assert mu["DE", t] == pytest.approx(62.32, abs=0.01)
+        for l in s["lines"]:
+            if l != "DE":
+                assert mu[l, t] == pytest.approx(0.0, abs=1e-9)
+
+    def test_de_flow_is_pinned_at_its_rating(self):
+        """Negative because power flows E -> D, against the declared
+        direction. The magnitude is what the rating constrains."""
+        s = _clear("config")
+        t = s["hour"]
+        assert s["res"]["f"]["DE", t] == pytest.approx(-240.0)
+
+    def test_nodal_prices(self):
+        """The five LMPs. What M3 exists to produce.
+
+        Derived by hand from one PTDF row before the LP was written, which is
+        why they are written out rather than recomputed:
+
+            LMP[i] = lambda + PTDF[DE, i] * mu[DE]
+
+        E prices at Brighton's own offer: it is fenced in behind a saturated
+        line, so an extra MW of load there is served by the cheapest thing
+        trapped on that side. D prices at 39.94, nearly Sundance's $40,
+        because relief has to come from the expensive side instead.
+        """
+        s = _clear("config")
+        t = s["hour"]
+        lmp = lmps(s["res"], s["buses"], s["lines"], s["PTDF"])
+        assert {i: lmp[i, t] for i in s["buses"]} == pytest.approx({
+            "A": 16.98,
+            "B": 26.38,
+            "C": 30.00,
+            "D": 39.94,
+            "E": 10.00,
+        }, abs=0.01)
+
+    def test_prices_separate_across_the_constraint(self):
+        """The structural claim, independent of the exact numbers.
+
+        Congestion is what makes a nodal market nodal. If DE binds and every
+        bus still prices the same, the congestion component is not reaching
+        the LMPs at all -- and the test above would pass on a coincidence.
+        """
+        s = _clear("config")
+        t = s["hour"]
+        lmp = lmps(s["res"], s["buses"], s["lines"], s["PTDF"])
+        assert lmp["D", t] - lmp["E", t] > 1.0
+
+    def test_congestion_costs_the_system_money(self):
+        """The constrained solve is more expensive. It has to be.
+
+        Same fleet, same load, strictly fewer feasible points -- so the
+        optimum cannot improve. A congested case that clears cheaper than the
+        unconstrained one means the limits were built with the wrong sign.
+        """
+        assert _clear("config")["res"]["cost"] > _clear("none")["res"]["cost"]

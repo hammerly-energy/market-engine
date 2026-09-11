@@ -139,3 +139,23 @@ class Scenario:
     def peak_load_mw(self) -> float:
         d = self.demand()
         return max(d.values())
+
+    def demand_by_bus(self) -> Dict[str, Dict[str, float]]:
+        """{bus: {hour: MW}}. Sibling to demand(), not a replacement.
+
+        Every bus gets an entry, including the ones carrying no load. The
+        network solver needs D[i, t] for every i to form an injection, and a
+        bus that is simply absent from the mapping is a KeyError rather than
+        a zero.
+
+        Loads are summed, not assigned, because nothing stops two Load objects
+        sitting at the same bus -- and a dict comprehension would silently
+        keep only the last of them.
+        """
+        out = {b.name: {t: 0.0 for t in self.hours} for b in self.buses}
+        for l in self.loads:
+            if l.bus not in out:
+                raise ValueError(f"load at unknown bus {l.bus!r}")
+            for t, mw in l.mw.items():
+                out[l.bus][t] += mw
+        return out

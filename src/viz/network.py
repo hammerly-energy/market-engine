@@ -311,13 +311,22 @@ def line_flows(buses, branches, slack, injection):
     return ptdf(buses, branches, slack) @ inj
 
 
-def _panel_flow_network(ax, buses, branches, slack, injection, flows):
+def _panel_flow_network(ax, buses, branches, slack, injection, flows,
+                        flagged=None):
+    """Network diagram carrying flows. flagged names the lines drawn in OVER.
+
+    Left to itself it flags any line past its rating, which is what the
+    merit-order panel needs. The cleared panel passes the binding set
+    instead: nothing is violated there, but the constraint that shaped the
+    whole answer still has to be visible.
+    """
     hue = dict(zip(buses, BUS_HUE))
 
     for br, mw in zip(branches, flows):
         (x0, y0), _ = LAYOUT[br.from_bus]
         (x1, y1), _ = LAYOUT[br.to_bus]
-        over = abs(mw) > br.limit_mw
+        over = (abs(mw) > br.limit_mw if flagged is None
+                else br.name in flagged)
         rated = np.isfinite(br.limit_mw)
 
         # Width carries loading, colour carries the violation. Both, so the
@@ -357,41 +366,71 @@ def _panel_flow_network(ax, buses, branches, slack, injection, flows):
     ax.set_axis_off()
 
 
-def _panel_loading(ax, branches, flows):
+def _panel_loading(ax, branches, flows, cleared):
+    """Two measurements per line: what merit order wants, and what clears.
+
+    Paired bars rather than one, because these are genuinely two different
+    quantities and the gap between them IS the redispatch. Only DE is
+    physically capped; every other line moves because the network redirects
+    the power that DE can no longer carry.
+    """
     names = [b.name for b in branches]
-    mag = np.abs(flows)
-    over = [abs(mw) > br.limit_mw for br, mw in zip(branches, flows)]
+    want = np.abs(flows)
+    got = np.abs(cleared)
+    over = [abs(mw) > br.limit_mw + 1e-6 for br, mw in zip(branches, flows)]
     y = np.arange(len(branches))
+    h = 0.32
 
-    ax.barh(y, mag, color=[OVER if o else INK_2 for o in over],
-            edgecolor=SURFACE, linewidth=0.8, height=0.62, zorder=2)
+    ax.barh(y - 0.17, want, color=[OVER if o else INK_MUTED for o in over],
+            edgecolor=SURFACE, linewidth=0.8, height=h, zorder=2)
+    ax.barh(y + 0.17, got, color=INK_2,
+            edgecolor=SURFACE, linewidth=0.8, height=h, zorder=2)
 
-    for i, (br, mw) in enumerate(zip(branches, flows)):
+    for i, br in enumerate(branches):
         if np.isfinite(br.limit_mw):
-            # The rating as a gate the bar has to pass through, not a bar of
-            # its own -- two bars per line would read as two measurements.
-            ax.plot([br.limit_mw, br.limit_mw], [i - 0.36, i + 0.36],
+            # The rating as a gate both bars have to pass through, not a bar
+            # of its own -- a third bar would read as a third measurement.
+            ax.plot([br.limit_mw, br.limit_mw], [i - 0.44, i + 0.44],
                     color=INK, linewidth=1.4, zorder=4)
-        ax.text(abs(mw) + 9, i, f"{abs(mw):.0f}", ha="left", va="center",
-                fontsize=8.5, color=OVER if over[i] else INK_2)
+        ax.text(want[i] + 9, i - 0.17, f"{want[i]:.0f}", ha="left",
+                va="center", fontsize=8.5, color=OVER if over[i] else INK_MUTED)
+        ax.text(got[i] + 9, i + 0.17, f"{got[i]:.0f}", ha="left",
+                va="center", fontsize=8.5, color=INK_2)
 
     # Label the topmost gate only. Naming each one repeats a unit and a word
     # the reader needs once.
     first = next(i for i, br in enumerate(branches) if np.isfinite(br.limit_mw))
-    ax.text(branches[first].limit_mw, first - 0.55, "Rating", ha="center",
+    ax.text(branches[first].limit_mw, first - 0.70, "Rating", ha="center",
             va="bottom", fontsize=8.5, color=INK)
+
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=INK_MUTED, edgecolor=SURFACE),
+        plt.Rectangle((0, 0), 1, 1, facecolor=INK_2, edgecolor=SURFACE),
+    ]
+    ax.legend(handles, ["Merit order", "Cleared"], frameon=False, fontsize=8.5,
+              labelcolor=INK_2, loc="lower right", handlelength=1.3,
+              borderpad=0.2)
 
     _bare(ax)
     ax.set_yticks(y, names, fontsize=8.5, color=INK_2)
-    ax.set_ylim(len(branches) - 0.5, -1.05)
-    ax.set_xlim(0, max(mag.max(), 400) * 1.16)
+    ax.set_ylim(len(branches) - 0.4, -1.15)
+    ax.set_xlim(0, max(want.max(), got.max(), 400) * 1.16)
     ax.set_xlabel("Flow (MW)", fontsize=9.5, color=INK_2)
     ax.set_ylabel("Branch", fontsize=9.5, color=INK_2)
 
 
-def figure_flows(buses, branches, slack, injection):
-    """Where the merit-order dispatch would push power. Returns a Figure."""
-    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.0),
+def figure_flows(buses, branches, slack, injection, cleared_flows):
+    """The bottleneck, and what the market does about it. Returns a Figure.
+
+    injection      the merit-order dispatch, which ignores the network
+    cleared_flows  {line: MW} from the LP, which does not
+
+    Panel (a) is deliberately the INFEASIBLE case: it is the only way to see
+    why the constraint matters, because once the LP has respected the rating
+    the violation is no longer anywhere on the page. Panel (b) then shows
+    both, so the figure never states a flow the run's results.txt contradicts.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.3),
                              gridspec_kw={"width_ratios": [1.0, 0.92]},
                              constrained_layout=True)
     fig.patch.set_facecolor(SURFACE)
@@ -399,12 +438,74 @@ def figure_flows(buses, branches, slack, injection):
         ax.set_facecolor(SURFACE)
 
     flows = line_flows(buses, branches, slack, injection)
+    cleared = np.array([cleared_flows[b.name] for b in branches])
 
     _panel_flow_network(axes[0], buses, branches, slack, injection, flows)
-    _title(axes[0], "a", "Flows and net injection (MW)")
+    _title(axes[0], "a", "Merit order, ignoring the network (MW)")
 
-    _panel_loading(axes[1], branches, flows)
+    _panel_loading(axes[1], branches, flows, cleared)
     _title(axes[1], "b", "Flow against rating")
+    return fig
+
+
+def _panel_redispatch(ax, fleet, merit, cleared, buses):
+    """What the network cost each unit, in MW. The cause of panel (a).
+
+    Diverging around zero because the sign is the whole message: the
+    constraint pushes some units down and pulls others up, and the two sides
+    must cancel because total load did not change.
+    """
+    hue = dict(zip(buses, BUS_HUE))
+    order = sorted(fleet, key=lambda g: cleared[g["name"]] - merit[g["name"]])
+    delta = [cleared[g["name"]] - merit[g["name"]] for g in order]
+    names = [_display(g["name"]) for g in order]
+    y = np.arange(len(order))
+
+    ax.barh(y, delta, color=[hue[g["bus"]] for g in order],
+            edgecolor=SURFACE, linewidth=0.8, height=0.62, zorder=3)
+    ax.axvline(0, color=INK_2, linewidth=0.9, zorder=2)
+
+    span = max(abs(d) for d in delta) or 1.0
+    for i, d in enumerate(delta):
+        if abs(d) < 1e-6:
+            ax.text(span * 0.04, i, "0", ha="left", va="center",
+                    fontsize=8.5, color=INK_MUTED)
+            continue
+        pad = span * 0.04 * (1 if d > 0 else -1)
+        ax.text(d + pad, i, f"{d:+.1f}", ha="left" if d > 0 else "right",
+                va="center", fontsize=8.5, color=INK_2)
+
+    _bare(ax)
+    ax.set_yticks(y, names, fontsize=8.5, color=INK_2)
+    ax.set_xlim(-span * 1.34, span * 1.34)
+    ax.set_xlabel("Change in output (MW)", fontsize=9.5, color=INK_2)
+    ax.set_ylabel("Generator", fontsize=9.5, color=INK_2)
+
+
+def figure_cleared(buses, branches, slack, injection, flows, binding,
+                   fleet, merit, cleared):
+    """The feasible answer: flows that respect every rating. Returns a Figure.
+
+    The companion to figure_flows, which shows the same network at a dispatch
+    the network cannot actually carry. Here nothing is violated, so DE is
+    flagged for BINDING rather than for overload -- a line sitting exactly on
+    its rating looks unremarkable otherwise, and it is the reason every other
+    number on the page is what it is.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.3),
+                             gridspec_kw={"width_ratios": [1.0, 0.82]},
+                             constrained_layout=True)
+    fig.patch.set_facecolor(SURFACE)
+    for ax in axes:
+        ax.set_facecolor(SURFACE)
+
+    mw = np.array([flows[b.name] for b in branches])
+    _panel_flow_network(axes[0], buses, branches, slack, injection, mw,
+                        flagged=binding)
+    _title(axes[0], "a", "Cleared flows and net injection (MW)")
+
+    _panel_redispatch(axes[1], fleet, merit, cleared, buses)
+    _title(axes[1], "b", "Redispatch from merit order")
     return fig
 
 
@@ -525,50 +626,112 @@ if __name__ == "__main__":
     assert abs(sum(injection.values())) < 1e-6, "injections must net to zero"
 
     # ---------------------------------------------------------------------
-    # HAND-DERIVED, AND TEMPORARY. Stage 3's LP and Stage 4's pricing.py
-    # replace every line of this block. It is here so the figures have prices
-    # to draw before the solver exists, and so the LP has something to be
-    # checked against -- if solve_dispatch_network_day disagrees with these
-    # numbers, one of the two is wrong and that is the point.
+    # The real clearing. The LP decides both the dispatch and the prices --
+    # nothing on this page is asserted by hand any more.
     #
-    # It works only because this case has exactly two marginal units and one
-    # binding line, so lambda and mu fall out of two equations. Nothing about
-    # it generalises; do not grow it.
+    # An earlier version of this block derived lambda and mu from two
+    # equations, because it only had to work for a case with exactly two
+    # marginal units and one binding line. tests/test_m3_network.py now
+    # checks the LP against those same hand numbers, so the crutch has served
+    # its purpose and is gone.
     # ---------------------------------------------------------------------
+    from src.ingest.scenario import build_scenario
+    from src.model.dispatch import solve_dispatch_network_day
+    from src.model.pricing import congestion_prices, lmps
+
     P = ptdf(buses, branches, slack)
-    de = [b.name for b in branches].index("DE")
-    i_e, i_c = buses.index("E"), buses.index("C")
+    lines = [b.name for b in branches]
+    Fmax = {b.name: b.limit_mw for b in branches}
 
-    # brighton (E) and solitude (C) are both off their bounds, so each prices
-    # at its own offer. Two equations, two duals.
-    mu = (10.0 - 30.0) / (P[de, i_e] - P[de, i_c])
-    lam = 30.0 - P[de, i_c] * mu
-    lmp = {b: lam + P[de, i] * mu for i, b in enumerate(buses)}
-
-    # Redispatch off E until DE sits exactly on its rating.
-    over = abs(line_flows(buses, branches, slack, injection)[de]) - 240.0
-    shift = over / (P[de, i_c] - P[de, i_e])
-    feasible = dict(res["p"])
-    feasible["brighton"] -= shift
-    feasible["solitude"] += shift
-
+    scenario = build_scenario(root / "configs" / "m3.yaml")
     at_bus = {g["name"]: g["bus"] for g in fleet}
+    hour = scenario.hours[0]
+
+    cleared = solve_dispatch_network_day(
+        c={g["name"]: g["cost"] for g in fleet},
+        Pmax={g["name"]: g["pmax"] for g in fleet},
+        D=scenario.demand_by_bus(),
+        gen_bus=at_bus,
+        buses=buses,
+        PTDF=P,
+        Fmax=Fmax,
+    )
+
+    # Drop the hour index. This case is one snapshot; the figures take plain
+    # per-generator and per-bus mappings.
+    feasible = {g["name"]: cleared["p"][g["name"], hour] for g in fleet}
+    mu = {l: congestion_prices(cleared)[l, hour] for l in lines}
+    lmp = {b: v for (b, t), v in lmps(cleared, buses, lines, P).items()}
+    lam = cleared["lmbda"][hour]
+    flow = {l: cleared["f"][l, hour] for l in lines}
+
+    # The merit-order dispatch panel (a) of figure 4 draws, kept separate
+    # from the cleared one so the redispatch panel has both ends of the move.
+    merit = {g["name"]: res["p"][g["name"]] for g in fleet}
+    binding = {l for l in lines if abs(mu[l]) > 1e-9}
+    cleared_injection = {
+        b: sum(feasible[g["name"]] for g in fleet if g["bus"] == b) - load.get(b, 0.0)
+        for b in buses
+    }
+
     payment = sum(mw * lmp[b] for b, mw in load.items())
     revenue = sum(mw * lmp[at_bus[n]] for n, mw in feasible.items())
-    print(f"congestion rent  {payment - revenue:12,.2f} $/h "
-          f"(mu x limit = {mu * 240.0:,.2f})")
+    rent = sum(mu[l] * Fmax[l] for l in lines if np.isfinite(Fmax[l]))
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = root / "runs" / stamp
     out.mkdir(parents=True, exist_ok=True)
     (out / "config.yaml").write_text((root / "configs" / "m3.yaml").read_text())
 
+    lines_out = [
+        f"{config['name']}  --  PJM 5-bus, DC network and congestion",
+        "",
+        f"  slack {slack}   hour {hour}   load {sum(load.values()):,.0f} MW"
+        f"   capacity {sum(g['pmax'] for g in fleet):,.0f} MW",
+        "",
+        "  Dispatch",
+    ]
+    for g in fleet:
+        n = g["name"]
+        lines_out.append(
+            f"    {_display(n):<12} {g['bus']}  {feasible[n]:8.2f} / {g['pmax']:6.0f} MW"
+            f"   @ ${g['cost']:5.2f}   paid ${lmp[g['bus']]:6.2f}"
+        )
+    lines_out += ["", "  Line flows"]
+    for l in lines:
+        cap = "  --  " if not np.isfinite(Fmax[l]) else f"{Fmax[l]:6.0f}"
+        flag = "  BINDING" if abs(mu[l]) > 1e-9 else ""
+        lines_out.append(
+            f"    {l:<4} {flow[l]:8.2f} / {cap} MW   mu ${mu[l]:7.2f}{flag}"
+        )
+    lines_out += ["", "  Prices ($/MWh)", f"    lambda {lam:.2f}"]
+    for b in buses:
+        lines_out.append(f"    {b}      {lmp[b]:6.2f}   (congestion "
+                         f"{lmp[b] - lam:+6.2f})")
+    lines_out += [
+        "",
+        "  Settlement",
+        f"    Load payment      {payment:14,.2f} $/h",
+        f"    Generator revenue {revenue:14,.2f} $/h",
+        f"    Congestion rent   {payment - revenue:14,.2f} $/h",
+        f"    sum mu x limit    {rent:14,.2f} $/h",
+        f"    Residual          {payment - revenue - rent:14.2e} $/h",
+        f"    Production cost   {cleared['cost']:14,.2f} $/h",
+        "",
+    ]
+    report = "\n".join(lines_out)
+    print(report)
+    (out / "results.txt").write_text(report)
+
     for name, fig in [
         ("m3_1_inputs", figure_inputs(buses, branches, slack, fleet, load)),
         ("m3_2_processing", figure_processing(buses, branches)),
         ("m3_3_results", figure_results(buses, branches, slack)),
-        ("m3_4_flows", figure_flows(buses, branches, slack, injection)),
-        ("m3_5_settlement", figure_settlement(buses, fleet, feasible, lmp)),
+        ("m3_4_flows", figure_flows(buses, branches, slack, injection, flow)),
+        ("m3_5_cleared", figure_cleared(
+            buses, branches, slack, cleared_injection, flow, binding,
+            fleet, merit, feasible)),
+        ("m3_6_settlement", figure_settlement(buses, fleet, feasible, lmp)),
     ]:
         for ext in ("png", "pdf"):
             fig.savefig(out / f"{name}.{ext}", dpi=300, facecolor=SURFACE)
