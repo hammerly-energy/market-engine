@@ -1,0 +1,120 @@
+name: m3
+description: >
+  PJM 5-bus, the standard congestion teaching case. Five buses, six lines,
+  five generators, three loads. The milestone is the network: a susceptance
+  matrix, PTDF relative to a slack, line flow limits, and LMPs assembled from
+  two dual families instead of one.
+
+  Every number here is transcribed from tests/fixtures/case5.m, which is
+  MATPOWER's case5 fetched verbatim from the MATPOWER repository. That file
+  is the provenance record and the source of truth; this config is the
+  declarative view of it. tests/test_m3_network.py parses the .m and asserts
+  the transcription still matches, because a single transposed row here would
+  reappear as an inexplicable PTDF sign later.
+
+  Original reference: F. Li and R. Bo, "Small Test Systems for Power System
+  Economic Studies", IEEE PES General Meeting 2010.
+
+# ------------------------------------------------------------------- naming
+# MATPOWER numbers the buses; PJM's training material and most writeups of
+# this case name them A..E and name the generators after Utah ski resorts.
+# The letters are used here because the prose, the equations and the figures
+# all use them, and CLAUDE.md requires identifiers to match across all three.
+#
+#     bus 1 = A     bus 2 = B     bus 3 = C     bus 4 = D     bus 5 = E
+#
+#            B -----BC----- C
+#            |              |
+#            AB             CD
+#            |              |
+#            A -----AD----- D
+#             \             |
+#              AE           DE
+#                \          |
+#                 \-------- E
+
+network:
+  # case5.m marks bus 4 as type 3, the slack. Nothing in the answer depends on
+  # this choice except the level of lambda -- dispatch, congestion rent, and
+  # every LMP DIFFERENCE are invariant (trap 2). The slack-invariance test is
+  # what proves it, so this value exists to be varied.
+  slack: D
+
+  # Column order for every matrix in src/network/. Fixed here so that PTDF
+  # columns mean the same thing in the solver, the tests, and the figure.
+  buses: [A, B, C, D, E]
+
+  # reactance_pu on the 100 MVA base in case5.m. Resistance is carried in the
+  # .m file and deliberately dropped: the DC approximation is lossless, so r
+  # has nowhere to go. limit_mw is rateA.
+  #
+  # case5.m writes rateA = 0 for an unlimited branch. That MATPOWER convention
+  # is NOT carried over -- 0 here would mean a line that may not be used at
+  # all, which is the opposite. Unlimited is written as .inf, so the config
+  # never has to be read with a lookup table in hand.
+  branches:
+    AB: {from: A, to: B, reactance_pu: 0.0281, limit_mw: 400.0}
+    AD: {from: A, to: D, reactance_pu: 0.0304, limit_mw: .inf}
+    AE: {from: A, to: E, reactance_pu: 0.0064, limit_mw: .inf}
+    BC: {from: B, to: C, reactance_pu: 0.0108, limit_mw: .inf}
+    CD: {from: C, to: D, reactance_pu: 0.0297, limit_mw: .inf}
+    DE: {from: D, to: E, reactance_pu: 0.0297, limit_mw: 240.0}
+
+# ---------------------------------------------------------------------- fleet
+# Pmax and the linear cost coefficient from mpc.gen and mpc.gencost. Every
+# gencost row is model 2, n = 2, so the offer is a single $/MWh slope with no
+# no-load term -- exactly the shape src/model/inputs.py already carries.
+#
+# Brighton is the cheapest unit in the fleet AND the furthest from load. That
+# is the whole design of the case: unconstrained it displaces everything, and
+# the corridor out of E is what stops it.
+fleet:
+  alta:      {bus: A, cost_usd_per_mwh: 14.0, pmax_mw:  40.0}
+  park_city: {bus: A, cost_usd_per_mwh: 15.0, pmax_mw: 170.0}
+  solitude:  {bus: C, cost_usd_per_mwh: 30.0, pmax_mw: 520.0}
+  sundance:  {bus: D, cost_usd_per_mwh: 40.0, pmax_mw: 200.0}
+  brighton:  {bus: E, cost_usd_per_mwh: 10.0, pmax_mw: 600.0}
+
+# ----------------------------------------------------------------------- load
+# mpc.bus Pd. Static, not EIA-930: M3 changes the network, and holding the
+# load source fixed keeps the milestone to one new failure surface. A single
+# hour, so the hour label is nominal.
+#
+# Total load is 1000 MW against 1530 MW of capacity.
+load:
+  source: static
+  mw:
+    B: 300.0
+    C: 300.0
+    D: 400.0
+
+notes: >
+  Confirmed by tests/test_m3_network.py, not assumed.
+
+  Uncongested (both limits raised to .inf) the case reduces to a merit order
+  stack: Brighton 600, Park City 170, Alta 40, Solitude 190, so lambda is $30
+  at every bus. Verify that BEFORE imposing a limit -- it is the test that
+  separates a topology bug from a pricing bug.
+
+  Congested, DE binds at 240 MW and nothing else does. Brighton backs down to
+  466.51 and Solitude comes up to 323.49, matching MATPOWER's own OPF answer
+  in the Pg column of tests/fixtures/case5.m. lambda is $39.94 and mu[DE] is
+  $62.32, giving
+
+      A 16.98   B 26.38   C 30.00   D 39.94   E 10.00
+
+  An earlier version of this note predicted a bus priced OUTSIDE the fleet's
+  offer range, above $40 or below $10. That does not happen here, and the
+  reason is worth keeping. With a single binding line every LMP is
+
+      lambda + PTDF[DE, i] * mu[DE]
+
+  and every entry of that PTDF row is negative or zero:
+
+      A -0.3685   B -0.2176   C -0.1595   D 0.0   E -0.4805
+
+  so congestion can only push a price DOWN from lambda. D, at zero, is the
+  ceiling, and E, the most negative, is the floor. The prices are bracketed
+  by construction. Getting one outside the offer range needs a second binding
+  constraint, or a binding row carrying entries of both signs -- neither of
+  which this case has. Not a bug, and not a thing to go looking for here.

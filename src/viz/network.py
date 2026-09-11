@@ -247,12 +247,16 @@ def figure_processing(buses, branches):
     names = [b.name for b in branches]
 
     _matrix(axes[0], incidence(buses, branches), names, buses, "{:+.0f}")
-    _title(axes[0], "a", "Incidence A")
+    _title(axes[0], "a", "Branch-bus incidence A")
     axes[0].set_xlabel("Bus", fontsize=9.5, color=INK_2)
     axes[0].set_ylabel("Branch", fontsize=9.5, color=INK_2)
 
     _matrix(axes[1], b_bus(buses, branches), buses, buses, "{:.0f}")
-    _title(axes[1], "b", "Susceptance B (p.u.)")
+    # "Susceptance B" reads as the branch susceptances b = 1/x, which this is
+    # not. This is B_bus = A.T @ diag(b) @ A, whose off-diagonals are NEGATIVE
+    # by construction -- and a reader who thinks they are looking at b sees six
+    # positive reactances turn into negative numbers for no reason.
+    _title(axes[1], "b", "Bus susceptance B_bus (p.u.)")
     axes[1].set_xlabel("Bus", fontsize=9.5, color=INK_2)
     axes[1].set_ylabel("Bus", fontsize=9.5, color=INK_2)
     return fig
