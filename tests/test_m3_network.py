@@ -45,6 +45,7 @@ from src.model.pricing import congestion_prices, lmps
 from src.network.ptdf import ptdf
 from src.network.topology import (
     b_bus, b_branch, b_flow, components, incidence)
+from src.settle.settlement import settle
 
 CASE5_M = Path(__file__).parent / "fixtures" / "case5.m"
 CONFIG = Path(__file__).parents[1] / "configs" / "m3.yaml"
@@ -447,6 +448,26 @@ class TestClearingInvariants:
 
         assert payments - revenue == pytest.approx(rent, abs=1e-6)
 
+        # The arithmetic above is deliberately hand-rolled, so the identity is
+        # checked independently of the module that reports it. settle() must
+        # then agree with it -- a wrapper that quietly computed something else
+        # would otherwise pass every test that only ever calls the wrapper.
+        gen_mw = {b: 0.0 for b in s["buses"]}
+        for (g, h), mw in s["res"]["p"].items():
+            if h == t:
+                gen_mw[s["gen_bus"][g]] += mw
+        money = settle(
+            lmp={b: lmp[b, t] for b in s["buses"]},
+            load_mw={b: s["demand"][b][t] for b in s["buses"]},
+            gen_mw=gen_mw,
+            mu={l: mu[l, t] for l in s["lines"]},
+            limits=s["Fmax"],
+        )
+        assert money["payments"] == pytest.approx(payments)
+        assert money["revenue"] == pytest.approx(revenue)
+        assert money["mu_times_limit"] == pytest.approx(rent)
+        assert money["residual"] == pytest.approx(0.0, abs=1e-6)
+
     @pytest.mark.parametrize("limits", ["none", "config"])
     def test_at_most_one_direction_binds_per_line(self, limits):
         """Why the limit is TWO one-sided constraints and not one ranged.
@@ -781,3 +802,98 @@ class TestScenarioTopologyValidation:
     def test_a_valid_network_passes_all_of_it(self):
         """The guards must not reject the case they ship alongside."""
         assert len(build_scenario(CONFIG).branches) == 6
+
+
+class TestSettle:
+    """settle() on numbers small enough to check by hand. Holds forever.
+
+    The case5 test above proves settle() agrees with the solver. These prove
+    it is doing the arithmetic the identity names, on inputs with no LP behind
+    them -- so a sign error cannot hide behind a case where both halves happen
+    to be zero.
+    """
+
+    def test_no_congestion_means_no_rent(self):
+        """One price everywhere: load pays exactly what generation collects."""
+        money = settle(
+            lmp={"A": 30.0, "B": 30.0},
+            load_mw={"A": 0.0, "B": 100.0},
+            gen_mw={"A": 100.0, "B": 0.0},
+            mu={"AB": 0.0},
+            limits={"AB": 400.0},
+        )
+        assert money["payments"] == 3000.0
+        assert money["revenue"] == 3000.0
+        assert money["congestion_rent"] == 0.0
+        assert money["residual"] == 0.0
+
+    def test_congestion_rent_is_the_price_gap_times_the_flow(self):
+        """Two buses, one binding line, every number hand-checkable.
+
+        Load at B pays $40, generation at A collects $10, and the line carries
+        100 MW at its limit. The $30 gap on 100 MW is $3000, and mu on a
+        binding line is exactly that gap -- so both halves of the identity
+        come to 3000 by different routes.
+        """
+        money = settle(
+            lmp={"A": 10.0, "B": 40.0},
+            load_mw={"A": 0.0, "B": 100.0},
+            gen_mw={"A": 100.0, "B": 0.0},
+            mu={"AB": 30.0},
+            limits={"AB": 100.0},
+        )
+        assert money["payments"] == 4000.0
+        assert money["revenue"] == 1000.0
+        assert money["congestion_rent"] == 3000.0
+        assert money["mu_times_limit"] == 3000.0
+        assert money["residual"] == 0.0
+
+    def test_unlimited_line_is_skipped_not_multiplied(self):
+        """inf * 0 is nan, and one nan destroys the residual silently.
+
+        The guard is the reason this function takes limits at all rather than
+        being handed a rent total, so it is worth its own test.
+        """
+        money = settle(
+            lmp={"A": 30.0, "B": 30.0},
+            load_mw={"A": 0.0, "B": 100.0},
+            gen_mw={"A": 100.0, "B": 0.0},
+            mu={"AB": 0.0},
+            limits={"AB": np.inf},
+        )
+        assert money["mu_times_limit"] == 0.0
+        assert not np.isnan(money["residual"])
+
+    def test_a_broken_price_shows_up_as_a_residual(self):
+        """The failure mode the identity exists to catch.
+
+        Same congested case, but the price at B is wrong by $5. Nothing raises
+        -- the arithmetic is all valid -- and the residual is the only thing
+        that says so. That is exactly how a PTDF sign error presents.
+        """
+        money = settle(
+            lmp={"A": 10.0, "B": 45.0},
+            load_mw={"A": 0.0, "B": 100.0},
+            gen_mw={"A": 100.0, "B": 0.0},
+            mu={"AB": 30.0},
+            limits={"AB": 100.0},
+        )
+        assert money["residual"] == pytest.approx(500.0)
+
+    def test_a_bus_carrying_both_load_and_generation_nets_correctly(self):
+        """Generation and load at one bus are separate terms, not a net.
+
+        They are settled at the same price so the arithmetic agrees either
+        way here -- but netting them first would silently lose the gross
+        quantities a settlement statement has to report.
+        """
+        money = settle(
+            lmp={"A": 20.0},
+            load_mw={"A": 60.0},
+            gen_mw={"A": 60.0},
+            mu={},
+            limits={},
+        )
+        assert money["payments"] == 1200.0
+        assert money["revenue"] == 1200.0
+        assert money["residual"] == 0.0

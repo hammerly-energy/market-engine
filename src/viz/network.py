@@ -642,6 +642,7 @@ if __name__ == "__main__":
     from src.ingest.scenario import build_scenario
     from src.model.dispatch import solve_dispatch_network_day
     from src.model.pricing import congestion_prices, lmps
+    from src.settle.settlement import settle
 
     P = ptdf(buses, branches, slack)
     lines = [b.name for b in branches]
@@ -678,9 +679,16 @@ if __name__ == "__main__":
         for b in buses
     }
 
-    payment = sum(mw * lmp[b] for b, mw in load.items())
-    revenue = sum(mw * lmp[at_bus[n]] for n, mw in feasible.items())
-    rent = sum(mu[l] * Fmax[l] for l in lines if np.isfinite(Fmax[l]))
+    # The identity, from src/settle/. This block used to repeat the arithmetic
+    # inline, which meant the figure and the tests could disagree about what
+    # "settled" means and nothing would say so.
+    gen_mw = {b: 0.0 for b in buses}
+    for n, mw in feasible.items():
+        gen_mw[at_bus[n]] += mw
+    money = settle(lmp=lmp, load_mw={b: load.get(b, 0.0) for b in buses},
+                   gen_mw=gen_mw, mu=mu, limits=Fmax)
+    payment, revenue = money["payments"], money["revenue"]
+    rent = money["mu_times_limit"]
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out = root / "runs" / stamp
