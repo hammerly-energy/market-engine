@@ -1,0 +1,154 @@
+name: m4
+description: >
+  The M3 network across a full day. Same five buses, same six lines, same five
+  generators -- the only thing that changes is that load has a shape, so
+  dispatch, flows and prices are indexed by (bus, hour) instead of by bus
+  alone.
+
+  This adds exactly one new failure surface, and it is a small one. M1 already
+  proved 24 hours on a single bus and M3 already proved the network in one
+  hour; M4 is their cross product. What it buys is a market that switches
+  congestion ON and OFF across a day, which is the first time LMPs in this repo
+  differ from each other in some hours and agree in others.
+
+  What M4 deliberately does NOT do is scale. Five buses with two limited lines
+  can produce at most one binding constraint at a time, and with a single
+  binding line every LMP is bracketed between the cheapest and the dearest
+  offer -- see the note at the end of configs/m3.yaml. Several lines binding at
+  once, and the prices outside the offer range that come with it, is M5 on
+  RTS-GMLC.
+
+  The network and fleet blocks below are copied verbatim from configs/m3.yaml.
+  That duplication is deliberate -- a config is fully declarative and standing
+  on its own is the point -- and it is guarded: tests/test_m4_network_day.py
+  asserts the two blocks are still identical, so a reactance edited in one file
+  and not the other fails loudly instead of quietly making the M3 regression
+  test meaningless.
+
+# ------------------------------------------------------------------- naming
+# MATPOWER numbers the buses; PJM's training material and most writeups of
+# this case name them A..E and name the generators after Utah ski resorts.
+# The letters are used here because the prose, the equations and the figures
+# all use them, and CLAUDE.md requires identifiers to match across all three.
+#
+#     bus 1 = A     bus 2 = B     bus 3 = C     bus 4 = D     bus 5 = E
+#
+#            B -----BC----- C
+#            |              |
+#            AB             CD
+#            |              |
+#            A -----AD----- D
+#             \             |
+#              AE           DE
+#                \          |
+#                 \-------- E
+
+network:
+  # case5.m marks bus 4 as type 3, the slack. Nothing in the answer depends on
+  # this choice except the level of lambda -- dispatch, congestion rent, and
+  # every LMP DIFFERENCE are invariant (trap 2). The slack-invariance test is
+  # what proves it, so this value exists to be varied.
+  slack: D
+
+  # Column order for every matrix in src/network/. Fixed here so that PTDF
+  # columns mean the same thing in the solver, the tests, and the figure.
+  buses: [A, B, C, D, E]
+
+  # reactance_pu on the 100 MVA base in case5.m. Resistance is carried in the
+  # .m file and deliberately dropped: the DC approximation is lossless, so r
+  # has nowhere to go. limit_mw is rateA.
+  #
+  # case5.m writes rateA = 0 for an unlimited branch. That MATPOWER convention
+  # is NOT carried over -- 0 here would mean a line that may not be used at
+  # all, which is the opposite. Unlimited is written as .inf, so the config
+  # never has to be read with a lookup table in hand.
+  branches:
+    AB: {from: A, to: B, reactance_pu: 0.0281, limit_mw: 400.0}
+    AD: {from: A, to: D, reactance_pu: 0.0304, limit_mw: .inf}
+    AE: {from: A, to: E, reactance_pu: 0.0064, limit_mw: .inf}
+    BC: {from: B, to: C, reactance_pu: 0.0108, limit_mw: .inf}
+    CD: {from: C, to: D, reactance_pu: 0.0297, limit_mw: .inf}
+    DE: {from: D, to: E, reactance_pu: 0.0297, limit_mw: 240.0}
+
+# ---------------------------------------------------------------------- fleet
+# Pmax and the linear cost coefficient from mpc.gen and mpc.gencost. Every
+# gencost row is model 2, n = 2, so the offer is a single $/MWh slope with no
+# no-load term -- exactly the shape src/model/inputs.py already carries.
+#
+# Brighton is the cheapest unit in the fleet AND the furthest from load. That
+# is the whole design of the case: unconstrained it displaces everything, and
+# the corridor out of E is what stops it.
+fleet:
+  alta:      {bus: A, cost_usd_per_mwh: 14.0, pmax_mw:  40.0}
+  park_city: {bus: A, cost_usd_per_mwh: 15.0, pmax_mw: 170.0}
+  solitude:  {bus: C, cost_usd_per_mwh: 30.0, pmax_mw: 520.0}
+  sundance:  {bus: D, cost_usd_per_mwh: 40.0, pmax_mw: 200.0}
+  brighton:  {bus: E, cost_usd_per_mwh: 10.0, pmax_mw: 600.0}
+
+
+# ----------------------------------------------------------------------- load
+# Peak x shape, not 24 numbers per bus.
+#
+# peak_mw is m3's static load, unchanged: B 300, C 300, D 400. shape peaks at
+# exactly 1.0, so hour 18 IS m3's case, solved by the same code path. The
+# published PJM 5-bus LMPs therefore stay a live regression test at one hour of
+# this day rather than becoming a historical note -- and if M4 ever breaks M3,
+# it breaks visibly at hour 18 instead of silently everywhere.
+#
+# Hours are 0..23, as at M1. No timezone: case5 is a textbook network with no
+# location and no clock, and a fabricated UTC stamp would look like ingested
+# data. UTC discipline belongs to real sources and arrives with RTS-GMLC at M5.
+#
+# The shape is synthetic, and its one job is to cross the congestion threshold.
+# Solved at m3's fleet, the DE corridor starts binding between 650 and 700 MW
+# of system load:
+#
+#     500 MW   uncongested   lambda 10.00   Brighton alone, one price everywhere
+#     660 MW   uncongested   lambda 15.00   Park City marginal, still one price
+#     690 MW   DE BINDS      lambda 31.46   five prices, Park City marginal
+#    1000 MW   DE binds      lambda 39.94   five prices, Solitude marginal
+#
+# Trough 0.50 (500 MW) and peak 1.00 (1000 MW) put all four regimes in one
+# day. Hour 22 is set to 0.69 rather than following the evening decline
+# smoothly to 0.67, because 690 MW is the only band where DE binds and Park
+# City is still the marginal unit -- the regime between "uncongested" and
+# "m3's answer", and the one that shows congestion is not a binary.
+#
+# Note what happens in between: from hour 7 to hour 21 the load moves by 270
+# MW and NO price changes at all. Once DE binds and Solitude is marginal, more
+# load is served by moving up Solitude's flat offer, and the dual does not care
+# how far up. A flat stretch of LMPs across a rising load is what a binding
+# constraint plus a single marginal unit looks like. Not a bug.
+#
+# Every value is chosen off a capacity breakpoint so each hour has a unique
+# marginal unit and therefore a unique dual (trap 3).
+load:
+  source: profile
+  peak_mw:
+    B: 300.0
+    C: 300.0
+    D: 400.0
+  shape:
+    [0.56, 0.53, 0.51, 0.50, 0.52, 0.58,   # 00-05  overnight trough
+     0.66, 0.73, 0.81, 0.86, 0.89, 0.91,   # 06-11  morning ramp, congestion starts
+     0.92, 0.93, 0.91, 0.89, 0.93, 0.97,   # 12-17  midday shoulder, evening ramp
+     1.00, 0.98, 0.90, 0.78, 0.69, 0.58]   # 18-23  peak at hour 18, then decline
+
+notes: >
+  Confirmed by tests/test_m4_network_day.py, not assumed.
+
+  Hour 18 reproduces configs/m3.yaml exactly: lambda 39.94, mu[DE] 62.32, and
+  the LMPs A 16.98, B 26.38, C 30.00, D 39.94, E 10.00.
+
+  The settlement identity is asserted PER HOUR, never on the day's sum. A sum
+  would let a positive residual in one hour cancel a negative one in another
+  and report a clean zero over a broken solve. This is the first milestone
+  where that distinction can bite, because it is the first with a network and
+  more than one hour.
+
+  Separability still holds. Nothing couples the hours -- no ramp limits, no
+  storage, no commitment -- so the joint 24-hour solve must reproduce 24
+  independent single-hour solves exactly, the same property M1 established.
+  That test lives here as well as at M1 because the network is a new chance to
+  break it: a constraint accidentally written across all t would couple every
+  hour through the flow limits and nothing else would notice.

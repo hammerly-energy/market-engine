@@ -89,9 +89,9 @@ class Generator:
     """An offer: a price and a quantity, located at a bus.
 
     cost_usd_per_mwh is a single marginal cost, not yet a curve. It becomes
-    fuel_price * heat_rate + VOM at M4 and a real ERCOT offer curve later.
+    fuel_price * heat_rate + VOM at M5 and a real ERCOT offer curve later.
     pmin_mw is carried but not enforced -- an LP has no way to honour it
-    (trap 4), which is the whole reason M5 exists.
+    (trap 4), which is the whole reason M6 exists.
     """
     name: str
     bus: str

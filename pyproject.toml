@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "market-engine"
+version = "0.4.0"          # tracks the milestone: 0.4 == M4 complete
+description = "A nodal electricity market clearing engine, built from scratch"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    "pyomo>=6.7",
+    "highspy>=1.7",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "pyyaml>=6",
+    "requests>=2.31",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+# The importable package is `src`, matching every `from src.model import ...`
+# in this repo and in the tests. It is a poor name for a distributed package --
+# `src` is a common directory name and a top-level collision waiting to happen --
+# but renaming it would touch every module and every test for no gain while this
+# is the only distribution consuming it. Revisit if a second consumer appears.
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

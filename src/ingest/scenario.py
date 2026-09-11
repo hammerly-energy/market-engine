@@ -104,6 +104,64 @@ def _loads_static(spec):
     return loads, {"load_source": "static", "static_load_mw": dict(mw)}
 
 
+def _loads_profile(spec):
+    """Per-bus demand across a horizon, declared in the config. The M4 path.
+
+    M3's static load is one snapshot; this is the same buses across a day. The
+    shape is a list of fractions and peak_mw is the per-bus demand at the top
+    of it, so bus b in hour t carries
+
+        load[b][t] = peak_mw[b] * shape[t]
+
+    Writing it as peak x shape rather than as a 24-entry list per bus is the
+    RTS idiom (an area profile times a bus participation factor), and it buys
+    one property worth having: the hour where shape == 1.0 is EXACTLY M3's
+    static case. So M4 contains M3 as its peak hour, and the published 5-bus
+    LMPs stay a live regression test instead of becoming a historical note.
+
+    That is why shape must peak at 1.0 and not merely at its own maximum --
+    a shape topping out at 0.95 would still solve, and would quietly move the
+    anchor hour off the case it is supposed to reproduce.
+
+    Hours are the integers 0..23, as at M1. Not UTC strings: case5 is a
+    textbook network with no location and no clock, and stamping a timezone on
+    it would make a fabricated instant look like ingested data. The UTC
+    discipline belongs to real sources, and it arrives with RTS-GMLC at M5.
+    """
+    shape = spec["shape"]
+    peak = spec["peak_mw"]
+    if not shape:
+        raise ValueError("load.shape is empty: no hours to solve")
+    if not peak:
+        raise ValueError("load.peak_mw is empty: no demand to serve")
+
+    shape = [float(v) for v in shape]
+    for t, v in enumerate(shape):
+        if v <= 0:
+            raise ValueError(f"load.shape[{t}] = {v}; must be > 0")
+    top = max(shape)
+    if abs(top - 1.0) > 1e-9:
+        raise ValueError(
+            f"load.shape must peak at exactly 1.0, got {top}. peak_mw is read "
+            "as the demand at the top of the shape, so a shape that peaks "
+            "anywhere else silently rescales every bus."
+        )
+
+    loads = tuple(
+        Load(bus=bus, mw={t: float(mw) * shape[t] for t in range(len(shape))})
+        for bus, mw in peak.items()
+    )
+    provenance = {
+        "load_source": "profile",
+        "horizon_hours": len(shape),
+        "peak_load_mw": dict(peak),
+        "shape_peak_hour": shape.index(top),
+        "shape_min": min(shape),
+        "peak_trough_ratio": top / min(shape),
+    }
+    return loads, provenance
+
+
 def _network(config):
     """Buses and branches. Empty before M3, and empty is a claim, not a gap."""
     net = config.get("network")
@@ -150,6 +208,8 @@ def scenario_from_config(config, api_key=None, origin="<dict>"):
         loads, provenance = _loads_eia930(spec, capacity, api_key)
     elif source == "static":
         loads, provenance = _loads_static(spec)
+    elif source == "profile":
+        loads, provenance = _loads_profile(spec)
     else:
         raise ValueError(f"unsupported load source {source!r}")
 

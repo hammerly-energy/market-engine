@@ -11,7 +11,7 @@ Panel (c) is the milestone. Each hour's price is plotted against that hour's
 load, over the single-hour sweep from M0, shaded light-to-dark by hour so the
 day can be walked in place. All 24 points sit on the curve, so
 lambda depends on D[t] and nothing else -- the 24-hour problem is 24 problems.
-That stops being true at M5, when startup cost and min up/down time put
+That stops being true at M6, when startup cost and min up/down time put
 entries off the block diagonal and the points lift off the curve.
 
 Every panel is computed from solves, not drawn.
@@ -126,7 +126,7 @@ def _panel_separability(ax, c, Pmax, D, res, hours):
     positively it has evidence in it: if the hours were coupled, an hour's
     price would depend on the rest of the day and the 24 points would
     scatter off the single-hour curve. They do not, so lambda is a function
-    of D[t] alone. At M5 these points lift off the curve.
+    of D[t] alone. At M6 these points lift off the curve.
     """
     total = sum(Pmax.values())
     sweep_d = [d * 1.0 for d in range(0, int(total) + 1)]

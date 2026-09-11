@@ -16,9 +16,9 @@ next, so the constraint matrix is block diagonal:
 A joint 24-hour solve must therefore reproduce 24 independent single-hour
 solves to the last digit. TestSeparability asserts exactly that.
 
-TestSeparability is expected to FAIL at M5. Startup cost and min up/down time
+TestSeparability is expected to FAIL at M6. Startup cost and min up/down time
 put entries off the diagonal, the blocks fuse, and hour 17's dual starts to
-carry information about hour 3. That failure is an M5 acceptance criterion,
+carry information about hour 3. That failure is an M6 acceptance criterion,
 not a regression -- do not delete this class when it goes red, and be able to
 explain which constraint broke it.
 
@@ -63,7 +63,7 @@ def hourly():
 # ---------------------------------------------------------------- separability
 
 class TestSeparability:
-    """The M1 goal. Superseded at M5 -- see the module docstring."""
+    """The M1 goal. Superseded at M6 -- see the module docstring."""
 
     def test_dispatch_matches_independent_hourly_solves(self, day, hourly):
         for t in HOURS:
@@ -139,7 +139,7 @@ class TestPricing:
         """Two hours with the same demand are the same LP block.
 
         Price is a function of the hour's demand alone. Nothing about position
-        in the day enters. This is exactly what M5 removes.
+        in the day enters. This is exactly what M6 removes.
         """
         flat = {t: 150.0 for t in HOURS}
         r = solve_dispatch_day(COST, PMAX, flat)

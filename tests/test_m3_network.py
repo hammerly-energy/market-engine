@@ -3,7 +3,7 @@ r"""M3 network tests: incidence, susceptance, PTDF, and the nodal clearing.
 Everything here is hand-checkable. The point of M3 is that exactly one new
 failure surface opens -- the network -- so these tests pin the linear algebra
 down before an LP is ever asked to trust it. A transposed row or a flipped
-sign caught here is an afternoon; caught at M4 it is an inexplicable LMP.
+sign caught here is an afternoon; caught at M5 it is an inexplicable LMP.
 
 Three reference networks, chosen because each has an answer you can write
 down without a computer:
@@ -22,7 +22,7 @@ down without a computer:
         ---- C ----
 
 TestNetworkInvariants holds forever. b_bus stays symmetric and singular at
-M4, at M7, and on any network anyone ever hands this repo -- those are
+M5, at M8, and on any network anyone ever hands this repo -- those are
 properties of the DC formulation, not of case5.
 
 TestCase5Transcription is the provenance guard. configs/m3.yaml is a
@@ -39,6 +39,7 @@ import pytest
 import yaml
 
 from src.ingest.scenario import build_scenario, load_config, scenario_from_config
+from src.model.clearing import binding_lines, clear
 from src.model.dispatch import solve_dispatch_network_day
 from src.model.inputs import Branch
 from src.model.pricing import congestion_prices, lmps
@@ -404,7 +405,7 @@ def _clear(limits="config"):
 class TestClearingInvariants:
     """Holds forever, on any network, congested or not.
 
-    These are the properties M4 will run on RTS-GMLC and M5 will run with
+    These are the properties M5 will run on RTS-GMLC and M6 will run with
     binaries fixed. Nothing here mentions case5's numbers.
     """
 
@@ -624,6 +625,145 @@ class TestCase5Congested:
         assert _clear("config")["res"]["cost"] > _clear("none")["res"]["cost"]
 
 
+class TestClearEntryPoint:
+    """src.model.clearing.clear() must agree with the hand-assembled pipeline.
+
+    clear() exists so that a caller which is not a figure can run a market in
+    one call. The risk in collapsing five steps into one name is that the
+    wrapper drifts from the sequence it replaced -- a stale PTDF, a bus order
+    recovered from the wrong list -- and no existing test would notice, because
+    every existing test assembles the pipeline itself.
+
+    So these compare the two routes rather than re-asserting case5's numbers.
+    The numbers are already pinned in TestCase5Congested; what is unpinned is
+    whether the shortcut takes the same road.
+    """
+
+    def test_matches_the_hand_assembled_pipeline(self):
+        by_hand = _clear("config")
+        t = by_hand["hour"]
+        auto = clear(build_scenario(CONFIG))
+
+        assert auto["buses"] == by_hand["buses"]
+        assert auto["lines"] == by_hand["lines"]
+        assert auto["slack"] == build_scenario(CONFIG).provenance["slack"]
+        np.testing.assert_allclose(auto["PTDF"], by_hand["PTDF"])
+
+        for g in by_hand["gen_bus"]:
+            assert auto["dispatch"][g, t] == pytest.approx(
+                by_hand["res"]["p"][g, t])
+        for l in by_hand["lines"]:
+            assert auto["flows"][l, t] == pytest.approx(by_hand["res"]["f"][l, t])
+
+        want = lmps(by_hand["res"], by_hand["buses"], by_hand["lines"],
+                    by_hand["PTDF"])
+        for b in by_hand["buses"]:
+            assert auto["lmp"][b, t] == pytest.approx(want[b, t])
+
+    def test_settlement_identity_holds(self):
+        """The primary correctness test, now reported by clear() itself.
+
+        Every hour separately. A day-level sum could hide a positive residual
+        in one hour cancelling a negative one in another.
+        """
+        cleared = clear(build_scenario(CONFIG))
+        for t in cleared["hours"]:
+            assert cleared["settlement"][t]["residual"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_limits_override_reaches_the_solver(self):
+        """The lever a sweep or a slider pulls.
+
+        Raising DE well above its unconstrained flow must un-bind it and
+        collapse the case to one system price -- the same outcome as
+        _clear("none"), reached by overriding a single line instead of all of
+        them.
+        """
+        cleared = clear(build_scenario(CONFIG), limits={"DE": 1e4})
+        t = cleared["hours"][0]
+        assert binding_lines(cleared, t) == set()
+        prices = {round(cleared["lmp"][b, t], 6) for b in cleared["buses"]}
+        assert len(prices) == 1
+
+    def test_tightening_a_limit_costs_more(self):
+        """Monotonicity through the override, not through the config.
+
+        Strictly fewer feasible points cannot produce a cheaper optimum. This
+        is the invariant a UI slider will exercise thousands of times, so it is
+        worth pinning at the entry point and not only at the solver.
+        """
+        loose = clear(build_scenario(CONFIG), limits={"DE": 1e4})
+        tight = clear(build_scenario(CONFIG), limits={"DE": 100.0})
+        assert tight["cost"] > loose["cost"]
+
+    def test_unknown_line_override_is_rejected(self):
+        """A typo in a line name must not silently clear the base case.
+
+        The override is the one argument that will arrive from outside this
+        repo. Ignoring an unrecognised key would answer a question nobody
+        asked, and it would look like a correct answer.
+        """
+        with pytest.raises(ValueError, match="unknown line"):
+            clear(build_scenario(CONFIG), limits={"NOPE": 100.0})
+
+    def test_slack_choice_moves_prices_by_a_constant(self):
+        """CLAUDE.md trap 2, asserted at the entry point.
+
+        Changing the slack shifts every LMP by one constant and moves no
+        dispatch and no flow. Price DIFFERENCES are what the market means.
+        """
+        base = clear(build_scenario(CONFIG), slack="D")
+        alt = clear(build_scenario(CONFIG), slack="A")
+        t = base["hours"][0]
+
+        for g in base["gen_bus"]:
+            assert alt["dispatch"][g, t] == pytest.approx(base["dispatch"][g, t])
+        for l in base["lines"]:
+            assert alt["flows"][l, t] == pytest.approx(base["flows"][l, t])
+
+        shifts = {round(alt["lmp"][b, t] - base["lmp"][b, t], 6)
+                  for b in base["buses"]}
+        assert len(shifts) == 1
+
+    def test_single_bus_scenario_is_refused(self):
+        """M0's scenarios have no network, and clear() must say so.
+
+        Falling through to the network solver with zero branches would build a
+        PTDF with no rows and return a price that looks fine and means nothing.
+        """
+        config = load_config(CONFIG)
+        config.pop("network")
+        config["fleet"] = {n: {k: v for k, v in spec.items() if k != "bus"}
+                           for n, spec in config["fleet"].items()}
+        config["load"] = {"source": "static", "mw": {"bus1": 600.0}}
+        with pytest.raises(ValueError, match="needs a network"):
+            clear(scenario_from_config(config))
+
+
+class TestConfigFromDict:
+    """scenario_from_config must be the same function build_scenario is.
+
+    The split exists so a config can arrive as a dict from a POST body or a
+    sweep. If the dict path ever diverged from the file path, every such caller
+    would be testing something other than what this repo's tests cover.
+    """
+
+    def test_dict_and_file_paths_agree(self):
+        from_file = build_scenario(CONFIG)
+        from_dict = scenario_from_config(load_config(CONFIG))
+
+        assert from_dict.generators == from_file.generators
+        assert from_dict.loads == from_file.loads
+        assert from_dict.buses == from_file.buses
+        assert from_dict.branches == from_file.branches
+
+    def test_origin_is_recorded(self):
+        """Provenance still says where the numbers came from with no file."""
+        assert str(CONFIG) in build_scenario(CONFIG).provenance["config"]
+        assert scenario_from_config(
+            load_config(CONFIG), origin="POST /clear"
+        ).provenance["config"] == "POST /clear"
+
+
 class TestBranchValidation:
     """A Branch that cannot exist must not be constructible. Holds forever.
 
@@ -635,7 +775,7 @@ class TestBranchValidation:
 
     Written at M3 because M3 is where Branch stops being a placeholder, but
     nothing here is about case5 or about the DC model specifically. They stay
-    true at M4 on RTS-GMLC and at M7 on a real fleet.
+    true at M5 on RTS-GMLC and at M8 on a real fleet.
     """
 
     def _branch(self, **kw):

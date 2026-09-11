@@ -55,6 +55,29 @@ def solve_dispatch(c, Pmax, D):
     }
 
 
+def capacity(Pmax, g, t):
+    """The upper bound on generator g in hour t.
+
+    Pmax[g] is either a float -- a machine whose capacity is the same in every
+    hour -- or a {hour: MW} mapping, which is what a wind farm, a solar plant
+    or a hydro schedule needs. Both live in the same argument because to the LP
+    they are the same thing: a number on the right of p[g,t] <= .
+
+    This is the ONLY coupling M5 adds, and it is not a coupling between hours.
+    An hourly cap still constrains each hour independently, so the block
+    diagonal structure M1 established survives intact. What breaks separability
+    is a constraint that spans two t -- ramping, min up time, state of charge --
+    and none of those are here yet.
+    """
+    cap = Pmax[g]
+    if isinstance(cap, dict):
+        try:
+            return cap[t]
+        except KeyError:
+            raise ValueError(f"{g}: no capacity for hour {t!r}") from None
+    return cap
+
+
 def _check_day_inputs(c, Pmax, D):
     """Reject malformed inputs before Pyomo turns them into a confusing model.
 
@@ -76,8 +99,13 @@ def _check_day_inputs(c, Pmax, D):
     if missing:
         raise ValueError(f"c and Pmax disagree on the fleet: {sorted(missing)}")
     for g, cap in Pmax.items():
-        if cap < 0:
-            raise ValueError(f"negative capacity for {g}: {cap}")
+        # A profiled unit carries one number per hour, so the check walks the
+        # profile. A single negative hour in a weather file is exactly the kind
+        # of thing that would otherwise invert one bound out of thousands.
+        hourly = cap.values() if isinstance(cap, dict) else [cap]
+        for mw in hourly:
+            if mw < 0:
+                raise ValueError(f"negative capacity for {g}: {mw}")
     for t, mw in D.items():
         if mw < 0:
             raise ValueError(f"negative demand in hour {t}: {mw}")
@@ -136,7 +164,7 @@ def solve_dispatch_network_day(c, Pmax, D, gen_bus, buses, PTDF, Fmax):
     #    Unchanged from the single-bus model. A generator's capacity does not
     #    depend on where it sits -- the network constrains the FLOW between
     #    buses, not the machine.
-    m.p = pyo.Var(m.G, m.T, bounds=lambda m, g, t: (0, Pmax[g]))
+    m.p = pyo.Var(m.G, m.T, bounds=lambda m, g, t: (0, capacity(Pmax, g, t)))
 
     # 3. minimize total cost over the whole horizon
     #    No transmission term. A DC line is lossless, so moving power costs
@@ -259,7 +287,7 @@ def solve_dispatch_day(c, Pmax, D):
     # 2. one variable per generator PER HOUR, bounded 0..Pmax
     #    Two index sets, so the bounds rule takes two indices. Pmax[g] does
     #    not depend on t -- the same machine, 24 times over.
-    m.p = pyo.Var(m.G, m.T, bounds=lambda m, g, t: (0, Pmax[g]))
+    m.p = pyo.Var(m.G, m.T, bounds=lambda m, g, t: (0, capacity(Pmax, g, t)))
 
     # 3. minimize total cost over the whole horizon
     #    A sum over both index sets. No discounting and no weighting: every
@@ -318,7 +346,7 @@ def marginal_unit(res, c, Pmax, t):
     degeneracy tests.
     """
     for g in c:
-        if 1e-6 < res["p"][g, t] < Pmax[g] - 1e-6:
+        if 1e-6 < res["p"][g, t] < capacity(Pmax, g, t) - 1e-6:
             return g
     return None
 
