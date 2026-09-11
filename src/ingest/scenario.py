@@ -126,13 +126,21 @@ def _network(config):
     return buses, branches
 
 
-def build_scenario(config_path, api_key=None):
-    """Assemble the Scenario a config declares. No solving, no plotting.
+def scenario_from_config(config, api_key=None, origin="<dict>"):
+    """Assemble the Scenario a config DICT declares. No solving, no plotting.
 
     Dispatches on load.source. Each source owns its own validation, so a new
     one cannot inherit another's guards by accident.
+
+    Takes a parsed dict rather than a path so that a config can arrive from
+    somewhere other than the filesystem -- a POST body, a parameter sweep that
+    varies one line limit per solve -- without that caller having to write a
+    temporary YAML file. build_scenario is the thin file-reading wrapper.
+
+    origin is recorded as provenance["config"]. It is a label, not something
+    anything reads back, and it exists so a run directory can still say where
+    its numbers came from when there was no file.
     """
-    config = load_config(config_path)
     generators = _fleet(config)
     capacity = sum(g.pmax_mw for g in generators)
 
@@ -153,7 +161,7 @@ def build_scenario(config_path, api_key=None):
 
     provenance = dict(provenance)
     provenance.update({
-        "config": str(config_path),
+        "config": str(origin),
         "fleet_capacity_mw": capacity,
     })
     if "slack" in config.get("network", {}):
@@ -169,4 +177,16 @@ def build_scenario(config_path, api_key=None):
         buses=buses,
         branches=branches,
         provenance=provenance,
+    )
+
+
+def build_scenario(config_path, api_key=None):
+    """Read a config file and assemble its Scenario.
+
+    The filesystem half of scenario_from_config, kept as its own name because
+    every caller in this repo -- tests, figures, the __main__ blocks -- holds
+    a path and nothing else.
+    """
+    return scenario_from_config(
+        load_config(config_path), api_key=api_key, origin=config_path
     )

@@ -38,12 +38,13 @@ import numpy as np
 import pytest
 import yaml
 
-from src.ingest.scenario import build_scenario
+from src.ingest.scenario import build_scenario, load_config, scenario_from_config
 from src.model.dispatch import solve_dispatch_network_day
 from src.model.inputs import Branch
 from src.model.pricing import congestion_prices, lmps
 from src.network.ptdf import ptdf
-from src.network.topology import b_bus, b_branch, b_flow, incidence
+from src.network.topology import (
+    b_bus, b_branch, b_flow, components, incidence)
 
 CASE5_M = Path(__file__).parent / "fixtures" / "case5.m"
 CONFIG = Path(__file__).parents[1] / "configs" / "m3.yaml"
@@ -600,3 +601,183 @@ class TestCase5Congested:
         unconstrained one means the limits were built with the wrong sign.
         """
         assert _clear("config")["res"]["cost"] > _clear("none")["res"]["cost"]
+
+
+class TestBranchValidation:
+    """A Branch that cannot exist must not be constructible. Holds forever.
+
+    These guard the one failure mode the rest of this file cannot catch. Every
+    other test here compares a computed number against a known one, which only
+    works when the inputs are physical. A negative reactance is not physical,
+    raises nothing anywhere downstream, and yields prices that look ordinary --
+    so the check has to sit at construction, where the bad value enters.
+
+    Written at M3 because M3 is where Branch stops being a placeholder, but
+    nothing here is about case5 or about the DC model specifically. They stay
+    true at M4 on RTS-GMLC and at M7 on a real fleet.
+    """
+
+    def _branch(self, **kw):
+        spec = dict(name="AB", from_bus="A", to_bus="B",
+                    reactance_pu=0.0281, limit_mw=400.0)
+        spec.update(kw)
+        return Branch(**spec)
+
+    def test_a_good_branch_still_builds(self):
+        """The guard must not reject the case5 branches it ships alongside."""
+        assert self._branch().reactance_pu == 0.0281
+
+    @pytest.mark.parametrize("x", [-0.0281, -1.0])
+    def test_negative_reactance_is_refused(self, x):
+        """The silent-wrong-answer case.
+
+        b = 1/x goes negative, B_bus becomes indefinite rather than positive
+        semidefinite, and the LP solves happily on a network where power flows
+        uphill. Nothing downstream raises; the prices are simply wrong.
+        """
+        with pytest.raises(ValueError, match="reactance_pu must be > 0"):
+            self._branch(reactance_pu=x)
+
+    def test_zero_reactance_is_refused(self):
+        """Caught here rather than as a ZeroDivisionError inside b_branch.
+
+        The arithmetic failure is real but names no branch, and a caller
+        editing a network sees a traceback through two modules instead of the
+        line they typed.
+        """
+        with pytest.raises(ValueError, match="reactance_pu must be > 0"):
+            self._branch(reactance_pu=0.0)
+
+    @pytest.mark.parametrize("mw", [0.0, -1.0])
+    def test_non_positive_limit_is_refused(self, mw):
+        """A line that can carry nothing is a line that should be deleted.
+
+        Left in place it makes the solve infeasible, and "infeasible" does not
+        tell anyone which of their edits caused it.
+        """
+        with pytest.raises(ValueError, match="limit_mw must be > 0"):
+            self._branch(limit_mw=mw)
+
+    def test_unlimited_line_is_allowed(self):
+        """inf is a deliberate modelling choice, not a missing value.
+
+        _clear("none") depends on it: raising every limit to infinity is how
+        this suite separates a topology bug from a pricing bug.
+        """
+        assert np.isinf(self._branch(limit_mw=np.inf).limit_mw)
+
+    def test_self_loop_is_refused(self):
+        """Both endpoints at one bus gives an all-zero incidence row.
+
+        The flow is then identically zero and the branch contributes nothing
+        to B_bus -- valid arithmetic describing no line at all.
+        """
+        with pytest.raises(ValueError, match="both 'A'"):
+            self._branch(to_bus="A")
+
+
+class TestComponents:
+    """Connected components. A pure graph property, true on any network.
+
+    Uses the three reference networks at the top of this file plus the cuts
+    that make them fall apart, because a components() that cannot tell a
+    3-line loop from three isolated buses is worse than no check at all.
+    """
+
+    def test_a_connected_network_is_one_component(self):
+        buses, branches = LOOP
+        assert components(buses, branches) == [["A", "B", "C"]]
+
+    def test_a_bus_with_no_branches_stands_alone(self):
+        buses, branches = RADIAL
+        assert components(buses + ["D"], branches) == [["A", "B", "C"], ["D"]]
+
+    def test_cutting_a_radial_line_splits_it(self):
+        """A --AB-- B --BC-- C, with BC removed. The M3 failure a UI produces."""
+        buses, branches = RADIAL
+        kept = [br for br in branches if br.name != "BC"]
+        assert components(buses, kept) == [["A", "B"], ["C"]]
+
+    def test_cutting_one_loop_line_keeps_it_whole(self):
+        """A loop survives losing any single line. That is what a loop is for."""
+        buses, branches = LOOP
+        for drop in [br.name for br in branches]:
+            kept = [br for br in branches if br.name != drop]
+            assert components(buses, kept) == [["A", "B", "C"]], drop
+
+    def test_no_branches_means_every_bus_is_its_own_island(self):
+        buses, _ = LOOP
+        assert components(buses, []) == [["A"], ["B"], ["C"]]
+
+    def test_order_follows_the_bus_order_given(self):
+        """Reproducible, not set-ordered.
+
+        The bus list fixes the column order of every matrix in src/network/,
+        so anything derived from it that reorders silently is a trap.
+        """
+        _, branches = RADIAL
+        assert components(["C", "B", "A"], branches) == [["C", "B", "A"]]
+
+    def test_case5_is_one_component(self):
+        """CLAUDE.md's PTDF note: one slack per connected component, and
+        case5 is one. Asserted rather than assumed."""
+        scenario = build_scenario(CONFIG)
+        assert len(components([b.name for b in scenario.buses],
+                              list(scenario.branches))) == 1
+
+
+class TestScenarioTopologyValidation:
+    """A Scenario whose network cannot be priced must say so in a sentence.
+
+    Every case here used to reach numpy or a bare KeyError two modules away.
+    Duplicate bus names and a network cut in half produced the SAME message --
+    "Singular matrix" -- from two unrelated mistakes, which is the worst thing
+    an error can do to someone editing topology.
+
+    Note where each check lives, because the split is deliberate:
+
+        Branch.__post_init__   what one line can check alone (reactance, limit)
+        Scenario.__post_init__ what needs the bus list (duplicates, endpoints)
+        clear()                what needs the slack (connectivity)
+
+    Connectivity is not a Scenario invariant. Two islands are a real power
+    system; they are simply two markets, each needing its own slack and its
+    own energy balance. This repo prices one, and clear() is where that
+    assumption is made.
+    """
+
+    def _config(self):
+        return load_config(CONFIG)
+
+    def test_duplicate_bus_name_is_named(self):
+        config = self._config()
+        config["network"]["buses"].append("E")
+        with pytest.raises(ValueError, match=r"duplicate bus names: \['E'\]"):
+            scenario_from_config(config)
+
+    def test_branch_endpoint_must_be_a_declared_bus(self):
+        config = self._config()
+        config["network"]["branches"]["DE"]["to"] = "Q"
+        with pytest.raises(ValueError, match="branch DE: to_bus 'Q' is not a declared bus"):
+            scenario_from_config(config)
+
+    def test_islanded_bus_names_the_bus_and_the_slack(self):
+        """Delete every line touching E. The single most likely UI edit.
+
+        Checked at ptdf() rather than further up, because ptdf() owns the
+        inverse that fails and already holds the slack. Anything that builds a
+        PTDF gets the diagnosis, not just the one entry point that happened to
+        remember to ask.
+        """
+        config = self._config()
+        branches = config["network"]["branches"]
+        for name in [n for n, spec in branches.items()
+                     if "E" in (spec["from"], spec["to"])]:
+            del branches[name]
+        scenario = scenario_from_config(config)
+        with pytest.raises(ValueError, match=r"disconnected.*\['E'\].*slack 'D'"):
+            ptdf([b.name for b in scenario.buses], list(scenario.branches), "D")
+
+    def test_a_valid_network_passes_all_of_it(self):
+        """The guards must not reject the case they ship alongside."""
+        assert len(build_scenario(CONFIG).branches) == 6

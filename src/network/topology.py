@@ -54,3 +54,44 @@ def b_bus(buses, branches):
     A = incidence(buses, branches)
     b = b_branch(branches)
     return A.T @ b @ A
+
+
+def components(buses, branches):
+    """Connected components of the network, as a list of sorted bus-name lists.
+
+    A pure graph question -- reactance and limits play no part, only which
+    buses a branch touches. Ordered by the bus order given, so the answer is
+    reproducible rather than set-ordered.
+
+    This exists because a disconnected network is the most common thing a user
+    editing topology produces, and it is invisible in the linear algebra:
+
+        A --AB-- B        C          B_bus is block diagonal. Each block has
+                                     its own zero eigenvalue, so the matrix has
+                                     TWO, and the single rank-1 fix in ptdf()
+                                     only removes one. The inverse then fails
+                                     with "Singular matrix" and names nothing.
+
+    Deleting a line and typing a bus name twice both land on that same message
+    from two modules away. Finding the components first turns it into a
+    sentence about the network the user actually drew.
+    """
+    parent = {b: b for b in buses}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]   # path halving
+            x = parent[x]
+        return x
+
+    for br in branches:
+        a, b = find(br.from_bus), find(br.to_bus)
+        if a != b:
+            parent[a] = b
+
+    groups = {}
+    for b in buses:
+        groups.setdefault(find(b), []).append(b)
+    # Keyed on a root, which is an implementation detail; return the groups
+    # themselves in first-bus order so two runs of the same network agree.
+    return sorted(groups.values(), key=lambda g: buses.index(g[0]))

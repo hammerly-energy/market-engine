@@ -30,10 +30,28 @@ def ptdf(buses, branches, slack):
     Returns:
         (L, N) array. Rows ordered as branches, columns as buses.
     """
-    from .topology import b_bus, b_flow
+    from .topology import b_bus, b_flow, components
 
     # PTDF = (b @ A) @ (A.T @ b @ A)^-1
     #      = b_flow @ b_bus^-1
+
+    # Connectivity is checked here, in front of the inverse, because this is
+    # the line that fails when it is missing. A disconnected network makes
+    # B_bus block diagonal, and each block carries its own zero eigenvalue --
+    # so the matrix has two, the rank-1 fix below removes one, and numpy
+    # reports "Singular matrix" without naming a bus. Duplicate bus names land
+    # on the identical message from an unrelated cause. Neither is something a
+    # caller can act on.
+    #
+    # One slack per connected component; this function prices one component.
+    islands = components(buses, branches)
+    if len(islands) > 1:
+        home = next(g for g in islands if slack in g)
+        stranded = sorted(b for g in islands if g is not home for b in g)
+        raise ValueError(
+            f"network is disconnected: {stranded} cannot reach slack "
+            f"{slack!r}; components are {islands}"
+        )
 
     # b_bus is singular by construction: adding a constant to every angle
     # changes no flow, so the all-ones vector is its null space. Adding 1 to

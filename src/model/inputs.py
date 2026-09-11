@@ -32,12 +32,56 @@ class Bus:
 
 @dataclass(frozen=True)
 class Branch:
-    """A transmission line with a thermal limit. Unused until M3."""
+    """A transmission line with a thermal limit.
+
+    reactance_pu is strictly positive, and that is not a style rule. The DC
+    model inverts it -- b = 1/x -- and then builds every matrix in
+    src/network/ out of the result:
+
+        x > 0    b > 0     B_bus is positive semidefinite. One zero
+                           eigenvalue, the angle reference, which ptdf()
+                           removes on purpose. This is the physical case.
+
+        x = 0    b = inf   ZeroDivisionError inside b_branch().
+
+        x < 0    b < 0     B_bus is INDEFINITE. It still inverts, the LP
+                           still solves, and it returns prices that look
+                           entirely plausible and mean nothing. A negative
+                           reactance is a line that carries power uphill.
+
+    The third case is why this check exists here rather than being left to
+    the linear algebra. A bad reactance does not raise anywhere downstream;
+    it produces a confident wrong answer, which is the one failure mode no
+    test catches and no user notices.
+    """
     name: str
     from_bus: str
     to_bus: str
     reactance_pu: float
     limit_mw: float
+
+    def __post_init__(self):
+        if self.from_bus == self.to_bus:
+            # Incidence would put +1 and -1 in the same column, giving an
+            # all-zero row: a line whose flow is identically zero and which
+            # contributes nothing to B_bus. Harmless arithmetic, meaningless
+            # network.
+            raise ValueError(
+                f"{self.name}: from_bus and to_bus are both {self.from_bus!r}"
+            )
+        if not self.reactance_pu > 0:
+            raise ValueError(
+                f"{self.name}: reactance_pu must be > 0, got {self.reactance_pu}"
+            )
+        if not self.limit_mw > 0:
+            # inf passes: an unlimited line is a modelling choice this repo
+            # uses deliberately, and inf > 0 is True. Zero does not, because a
+            # line that can carry nothing is a line that should be deleted --
+            # keeping it makes every solve infeasible for a reason the user
+            # cannot see on screen.
+            raise ValueError(
+                f"{self.name}: limit_mw must be > 0, got {self.limit_mw}"
+            )
 
 
 @dataclass(frozen=True)
@@ -93,6 +137,33 @@ class Scenario:
     provenance: Dict = field(default_factory=dict)
 
     def __post_init__(self):
+        # Bus names are the column order of every matrix in src/network/ and
+        # the keys of every price. A repeat gives B_bus two identical rows,
+        # which is singular for a reason that has nothing to do with the angle
+        # reference ptdf() expects to remove -- so it surfaces as "Singular
+        # matrix" from inside numpy, indistinguishable from a network that was
+        # simply cut in half.
+        bus_names = [b.name for b in self.buses]
+        if len(bus_names) != len(set(bus_names)):
+            dupes = sorted({n for n in bus_names if bus_names.count(n) > 1})
+            raise ValueError(f"duplicate bus names: {dupes}")
+
+        # A Branch validates itself, but it cannot see the bus list, so this is
+        # the only place an endpoint typo can be caught. Left alone it becomes
+        # a bare KeyError two modules away in incidence().
+        branch_names = [br.name for br in self.branches]
+        if len(branch_names) != len(set(branch_names)):
+            dupes = sorted({n for n in branch_names if branch_names.count(n) > 1})
+            raise ValueError(f"duplicate branch names: {dupes}")
+        known = set(bus_names)
+        for br in self.branches:
+            for end, bus in (("from_bus", br.from_bus), ("to_bus", br.to_bus)):
+                if bus not in known:
+                    raise ValueError(
+                        f"branch {br.name}: {end} {bus!r} is not a declared bus "
+                        f"{sorted(known)}"
+                    )
+
         names = [g.name for g in self.generators]
         if len(names) != len(set(names)):
             raise ValueError(f"duplicate generator names in {names}")
